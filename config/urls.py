@@ -25,6 +25,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from apps.ai_extraction.views import AiExtractionCorrectionViewSet, DocumentExtractionJobViewSet
 from apps.audit_logs.views import AuditLogViewSet
 from apps.billing_confirmations.views import TravelBillingConfirmationNoteViewSet, TravelBillingConfirmationRevisionViewSet
+from apps.common.views import current_user
 from apps.dashboard.views import DashboardViewSet
 from apps.invoice_matching.views import InvoiceMatchingViewSet
 from apps.master_data.views import CountryViewSet, DepartmentViewSet, EmployeeViewSet, ProjectViewSet, RouteViewSet, SupplierViewSet
@@ -57,7 +58,10 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair_root'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh_root'),
     path('api/v1/auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/v1/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/v1/auth/me/', current_user, name='current_user'),
     path('api/v1/', include(router.urls)),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

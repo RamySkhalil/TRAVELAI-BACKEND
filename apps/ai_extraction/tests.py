@@ -1,8 +1,11 @@
 from datetime import date
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.test import TestCase, override_settings
+from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from rest_framework.test import APIClient
 
 from apps.ai_extraction.models import AiExtractionCorrection, DocumentExtractionJob, DocumentType, ExtractionStatus
 from apps.ai_extraction.providers.openai_provider import OpenAIExtractionProvider
@@ -198,3 +201,152 @@ class AiExtractionProviderFoundationTests(TestCase):
             current_status=TravelCaseStatus.UNDER_BOOKING,
             created_by=self.user,
         )
+
+
+class AiExtractionHttpEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user_model = get_user_model()
+        self.hr_user = self._create_user("hr-user", "HR")
+        self.booking_user = self._create_user("booking-user", "BookingOfficer")
+        self.finance_user = self._create_user("finance-user", "Finance")
+        self.auditor_user = self._create_user("auditor-user", "Auditor")
+
+    def test_unauthenticated_extract_ticket_returns_401(self):
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-ticket/",
+            {"raw_text": "ticket", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_hr_can_extract_ticket(self):
+        self.client.force_authenticate(self.hr_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-ticket/",
+            {"raw_text": "ticket", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["document_type"], DocumentType.FLIGHT_TICKET)
+        self.assertIn("id", response.data)
+        self.assertEqual(DocumentExtractionJob.objects.count(), 1)
+
+    def test_authenticated_booking_officer_can_extract_ticket(self):
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-ticket/",
+            {"raw_text": "ticket", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], ExtractionStatus.EXTRACTED)
+
+    def test_extract_invoice_returns_document_extraction_job(self):
+        self.client.force_authenticate(self.finance_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-invoice/",
+            {"raw_text": "invoice", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["document_type"], DocumentType.SUPPLIER_INVOICE)
+        self.assertEqual(response.data["status"], ExtractionStatus.EXTRACTED)
+        self.assertIn("normalized_data", response.data)
+
+    def test_confirm_endpoint_sets_status_confirmed(self):
+        job = self._create_extracted_ticket_job()
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.post(
+            f"/api/v1/ai-extraction-jobs/{job.id}/confirm/",
+            {"corrected_data": {"confirmed": True}},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], ExtractionStatus.CONFIRMED)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExtractionStatus.CONFIRMED)
+        self.assertEqual(job.confirmed_by, self.booking_user)
+
+    def test_reject_endpoint_sets_status_rejected(self):
+        job = self._create_extracted_ticket_job()
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.post(
+            f"/api/v1/ai-extraction-jobs/{job.id}/reject/",
+            {"reason": "Wrong document"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], ExtractionStatus.REJECTED)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExtractionStatus.REJECTED)
+        self.assertEqual(job.rejected_by, self.booking_user)
+
+    def test_extract_ticket_endpoint_does_not_create_ticket_version(self):
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-ticket/",
+            {"raw_text": "ticket", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(TicketVersion.objects.count(), 0)
+
+    def test_extract_invoice_endpoint_does_not_create_supplier_invoice_line(self):
+        self.client.force_authenticate(self.finance_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-invoice/",
+            {"raw_text": "invoice", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(SupplierInvoiceLine.objects.count(), 0)
+
+    def test_auth_me_returns_current_user_details(self):
+        self.client.force_authenticate(self.hr_user)
+
+        response = self.client.get("/api/v1/auth/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["username"], "hr-user")
+        self.assertIn("HR", response.data["groups"])
+        self.assertIn("permissions", response.data)
+        self.assertFalse(response.data["is_superuser"])
+
+    def test_auditor_cannot_write_ai_extraction_jobs(self):
+        self.client.force_authenticate(self.auditor_user)
+
+        response = self.client.post(
+            "/api/v1/ai-extraction-jobs/extract-ticket/",
+            {"raw_text": "ticket", "provider": "mock"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def _create_user(self, username, group_name):
+        user = self.user_model.objects.create_user(username=username, password="test-pass")
+        group, _ = Group.objects.get_or_create(name=group_name)
+        user.groups.add(group)
+        return user
+
+    def _create_extracted_ticket_job(self):
+        job = create_extraction_job(DocumentType.FLIGHT_TICKET, raw_text="ticket", user=self.booking_user)
+        run_ticket_extraction(job, "mock", self.booking_user)
+        job.refresh_from_db()
+        return job
