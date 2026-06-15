@@ -1,13 +1,13 @@
 from datetime import date
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.audit_logs.services import create_audit_log
 from apps.common.services.locking import lock_instance
 from apps.common.services.sequences import generate_sequence
-from apps.supplier_invoices.models import SupplierInvoiceStatus
+from apps.supplier_invoices.models import SupplierInvoice, SupplierInvoiceStatus
 
 from .models import BillingConfirmationStatus, FinanceStatus, TravelBillingConfirmationNote
 
@@ -23,36 +23,40 @@ def lock_records_after_tbcn(*records) -> None:
 
 
 def generate_tbcn(supplier_invoice, user) -> TravelBillingConfirmationNote:
-    if supplier_invoice.status != SupplierInvoiceStatus.HR_APPROVED:
-        raise ValidationError("TBCN can only be generated for HR approved supplier invoices.")
-    if supplier_invoice.billing_confirmations.exclude(
-        status__in=[BillingConfirmationStatus.CANCELLED, BillingConfirmationStatus.REVISED]
-    ).exists():
-        raise ValidationError("An active TBCN already exists for this supplier invoice.")
-    lines = list(supplier_invoice.lines.select_related("travel_case", "ticket_version").all())
-    if not lines:
-        raise ValidationError("TBCN cannot be generated without invoice lines.")
-    country_code = next((line.travel_case.country.code for line in lines if line.travel_case_id), "LY")
-    year = supplier_invoice.invoice_date.year if supplier_invoice.invoice_date else date.today().year
-    matched_amount = sum((line.invoiced_amount for line in lines), start=0)
-    difference_amount = sum((line.difference_amount for line in lines), start=0)
-
     with transaction.atomic():
-        tbcn = TravelBillingConfirmationNote.objects.create(
-            confirmation_no=next_tbcn_number(country_code, year),
-            supplier_invoice=supplier_invoice,
-            supplier=supplier_invoice.supplier,
-            supplier_invoice_number=supplier_invoice.supplier_invoice_number,
-            total_amount=supplier_invoice.total_amount,
-            matched_amount=matched_amount,
-            difference_amount=difference_amount,
-            currency=supplier_invoice.currency,
-            status=BillingConfirmationStatus.GENERATED,
-            finance_status=FinanceStatus.NOT_SENT,
-            generated_by=user,
-            generated_at=timezone.now(),
-            is_locked=True,
-        )
+        supplier_invoice = SupplierInvoice.objects.select_for_update().get(pk=supplier_invoice.pk)
+        if supplier_invoice.status != SupplierInvoiceStatus.HR_APPROVED:
+            raise ValidationError("TBCN can only be generated for HR approved supplier invoices.")
+        if supplier_invoice.billing_confirmations.exclude(
+            status__in=[BillingConfirmationStatus.CANCELLED, BillingConfirmationStatus.REVISED]
+        ).exists():
+            raise ValidationError("An active TBCN already exists for this supplier invoice.")
+        lines = list(supplier_invoice.lines.select_related("travel_case__country", "ticket_version").all())
+        if not lines:
+            raise ValidationError("TBCN cannot be generated without invoice lines.")
+        country_code = next((line.travel_case.country.code for line in lines if line.travel_case_id), "LY")
+        year = supplier_invoice.invoice_date.year if supplier_invoice.invoice_date else date.today().year
+        matched_amount = sum((line.invoiced_amount for line in lines), start=0)
+        difference_amount = sum((line.difference_amount for line in lines), start=0)
+
+        try:
+            tbcn = TravelBillingConfirmationNote.objects.create(
+                confirmation_no=next_tbcn_number(country_code, year),
+                supplier_invoice=supplier_invoice,
+                supplier=supplier_invoice.supplier,
+                supplier_invoice_number=supplier_invoice.supplier_invoice_number,
+                total_amount=supplier_invoice.total_amount,
+                matched_amount=matched_amount,
+                difference_amount=difference_amount,
+                currency=supplier_invoice.currency,
+                status=BillingConfirmationStatus.GENERATED,
+                finance_status=FinanceStatus.NOT_SENT,
+                generated_by=user,
+                generated_at=timezone.now(),
+                is_locked=True,
+            )
+        except IntegrityError as exc:
+            raise ValidationError("An active TBCN already exists for this supplier invoice.") from exc
         lock_instance(supplier_invoice, save=False)
         supplier_invoice.status = SupplierInvoiceStatus.TBCN_GENERATED
         supplier_invoice.save(update_fields=["is_locked", "locked_at", "status", "updated_at"])
@@ -73,18 +77,14 @@ def generate_tbcn(supplier_invoice, user) -> TravelBillingConfirmationNote:
 
 
 def _ensure_generated_tbcn(tbcn):
-    if tbcn.status not in [
-        BillingConfirmationStatus.GENERATED,
-        BillingConfirmationStatus.REVIEWED,
-        BillingConfirmationStatus.SENT_TO_FINANCE,
-        BillingConfirmationStatus.FINANCE_ACCEPTED,
-        BillingConfirmationStatus.PAID,
-    ]:
+    if tbcn.status in [BillingConfirmationStatus.DRAFT, BillingConfirmationStatus.CANCELLED, BillingConfirmationStatus.REVISED]:
         raise ValidationError("Finance actions require a generated TBCN.")
 
 
 def send_tbcn_to_finance(tbcn, user):
     _ensure_generated_tbcn(tbcn)
+    if tbcn.status not in [BillingConfirmationStatus.GENERATED, BillingConfirmationStatus.REVIEWED]:
+        raise ValidationError("Only generated TBCNs can be sent to finance.")
     old_value = {"status": tbcn.status, "finance_status": tbcn.finance_status}
     tbcn.sent_to_finance_by = user
     tbcn.sent_to_finance_at = timezone.now()
@@ -104,7 +104,7 @@ def send_tbcn_to_finance(tbcn, user):
 
 def mark_finance_accepted(tbcn, user):
     _ensure_generated_tbcn(tbcn)
-    if tbcn.finance_status == FinanceStatus.NOT_SENT:
+    if tbcn.status != BillingConfirmationStatus.SENT_TO_FINANCE or tbcn.finance_status != FinanceStatus.SENT:
         raise ValidationError("TBCN must be sent to finance before acceptance.")
     old_value = {"status": tbcn.status, "finance_status": tbcn.finance_status}
     tbcn.finance_status = FinanceStatus.ACCEPTED
@@ -125,7 +125,7 @@ def mark_finance_accepted(tbcn, user):
 
 def mark_tbcn_paid(tbcn, user):
     _ensure_generated_tbcn(tbcn)
-    if tbcn.finance_status != FinanceStatus.ACCEPTED:
+    if tbcn.status != BillingConfirmationStatus.FINANCE_ACCEPTED or tbcn.finance_status != FinanceStatus.ACCEPTED:
         raise ValidationError("TBCN must be finance accepted before marking paid.")
     old_value = {"status": tbcn.status, "finance_status": tbcn.finance_status}
     tbcn.finance_status = FinanceStatus.PAID

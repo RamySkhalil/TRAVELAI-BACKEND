@@ -1,13 +1,22 @@
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.ai_extraction.models import DocumentExtractionJob
 from apps.common.permissions import RoleBasedOperationalPermission
+from apps.travel_cases.models import TravelCase
 
 from .filters import TicketVersionFilter
 from .models import TicketVersion
 from .serializers import TicketVersionSerializer
-from .services import create_ticket_version_from_confirmed_data, confirm_ticket_version, lock_ticket_version, mark_ticket_cancelled
+from .services import (
+    confirm_ticket_version,
+    create_ticket_version_from_confirmed_data,
+    create_ticket_version_from_confirmed_extraction,
+    lock_ticket_version,
+    mark_ticket_cancelled,
+)
 
 
 class TicketVersionPermission(RoleBasedOperationalPermission):
@@ -28,6 +37,25 @@ class TicketVersionViewSet(viewsets.ModelViewSet):
         data.pop("version_number", None)
         ticket_version = create_ticket_version_from_confirmed_data(travel_case, data, self.request.user)
         serializer.instance = ticket_version
+
+    @action(detail=False, methods=["post"], url_path="create-from-extraction")
+    def create_from_extraction(self, request):
+        extraction_job = self._get_extraction_job(request.data.get("extraction_job"))
+        travel_case = get_object_or_404(TravelCase, pk=request.data.get("travel_case"))
+        ticket_version = create_ticket_version_from_confirmed_extraction(
+            extraction_job=extraction_job,
+            travel_case=travel_case,
+            ticket_action=request.data.get("ticket_action"),
+            overrides=request.data.get("overrides") or {},
+            user=request.user,
+        )
+        return Response(self.get_serializer(ticket_version).data)
+
+    def _get_extraction_job(self, lookup):
+        queryset = DocumentExtractionJob.objects.all()
+        if str(lookup or "").isdigit():
+            return get_object_or_404(queryset, pk=lookup)
+        return get_object_or_404(queryset, uid=lookup)
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):

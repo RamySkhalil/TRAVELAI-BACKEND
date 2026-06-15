@@ -3,8 +3,9 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
@@ -123,6 +124,15 @@ class BackendFoundationTests(TestCase):
 
         with self.assertRaises(IntegrityError), transaction.atomic():
             Permit.objects.create(travel_case=self.travel_case, permit_type=PermitType.LIBYA_PERMIT, created_by=self.user)
+
+    @override_settings(DEBUG=True)
+    def test_seed_demo_data_is_idempotent(self):
+        call_command("seed_demo_data", verbosity=0)
+        call_command("seed_demo_data", verbosity=0)
+
+        self.assertEqual(Employee.objects.filter(badge_number__startswith="DEMO-EMP-").count(), 3)
+        self.assertEqual(TravelCase.objects.filter(notes__contains="seed_demo_data").count(), 3)
+        self.assertEqual(Project.objects.filter(code__in=["DEMO-SIRTE", "DEMO-TRIPOLI"]).count(), 2)
 
     def test_tbcn_confirmation_no_is_unique(self):
         TravelBillingConfirmationNote.objects.create(

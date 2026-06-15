@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
+import dj_database_url
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -59,6 +60,25 @@ INSTALLED_APPS = [
     'apps.common',
 ]
 
+CLOUDFLARE_R2_REQUIRED_ENV_NAMES = (
+    "CLOUDFLARE_R2_ACCESS_KEY_ID",
+    "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+    "CLOUDFLARE_R2_BUCKET_NAME",
+    "CLOUDFLARE_R2_ENDPOINT_URL",
+    "CLOUDFLARE_R2_REGION",
+)
+
+
+def r2_storage_enabled(env=os.environ) -> bool:
+    """Return True only when every required Cloudflare R2 variable name is present."""
+    return all(bool(env.get(name)) for name in CLOUDFLARE_R2_REQUIRED_ENV_NAMES)
+
+
+CLOUDFLARE_R2_ENABLED = r2_storage_enabled()
+
+if CLOUDFLARE_R2_ENABLED:
+    INSTALLED_APPS.append("storages")
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
@@ -93,16 +113,29 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv("POSTGRES_DB", "travelops"),
-        'USER': os.getenv("POSTGRES_USER", "travelops"),
-        'PASSWORD': os.getenv("POSTGRES_PASSWORD", "travelops"),
-        'HOST': os.getenv("POSTGRES_HOST", "localhost"),
-        'PORT': os.getenv("POSTGRES_PORT", "5432"),
+_database_url = os.getenv("DATABASE_URL", "").strip()
+DATABASE_URL_ENABLED = bool(_database_url)
+DATABASE_CONN_MAX_AGE = int(os.getenv("DATABASE_CONN_MAX_AGE", "60"))
+
+if DATABASE_URL_ENABLED:
+    default_database = dj_database_url.parse(
+        _database_url,
+        conn_max_age=DATABASE_CONN_MAX_AGE,
+    )
+    default_database.setdefault("OPTIONS", {})
+    default_database["OPTIONS"].setdefault("sslmode", "require")
+    DATABASES = {"default": default_database}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv("POSTGRES_DB", "travelops"),
+            'USER': os.getenv("POSTGRES_USER", "travelops"),
+            'PASSWORD': os.getenv("POSTGRES_PASSWORD", "travelops"),
+            'HOST': os.getenv("POSTGRES_HOST", "localhost"),
+            'PORT': os.getenv("POSTGRES_PORT", "5432"),
+        }
     }
-}
 
 
 # Password validation
@@ -144,6 +177,32 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+if CLOUDFLARE_R2_ENABLED:
+    AWS_ACCESS_KEY_ID = os.getenv("CLOUDFLARE_R2_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.getenv("CLOUDFLARE_R2_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = os.getenv("CLOUDFLARE_R2_BUCKET_NAME")
+    AWS_S3_ENDPOINT_URL = os.getenv("CLOUDFLARE_R2_ENDPOINT_URL")
+    AWS_S3_REGION_NAME = os.getenv("CLOUDFLARE_R2_REGION")
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+    AWS_S3_ADDRESSING_STYLE = "path"
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True
+    AWS_S3_FILE_OVERWRITE = False
+    # Future uploaded/generated documents for tickets, supplier invoices, permits,
+    # and TBCN PDFs can use FileField storage without bypassing Django controls.
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+    }
 
 CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS",

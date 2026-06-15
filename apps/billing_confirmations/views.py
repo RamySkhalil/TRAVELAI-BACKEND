@@ -17,7 +17,17 @@ class BillingConfirmationPermission(RoleBasedOperationalPermission):
 
 
 class TravelBillingConfirmationNoteViewSet(viewsets.ModelViewSet):
-    queryset = TravelBillingConfirmationNote.objects.select_related("supplier_invoice", "supplier").all()
+    queryset = (
+        TravelBillingConfirmationNote.objects.select_related(
+            "generated_by",
+            "reviewed_by",
+            "sent_to_finance_by",
+            "supplier_invoice",
+            "supplier",
+        )
+        .prefetch_related("supplier_invoice__lines")
+        .all()
+    )
     serializer_class = TravelBillingConfirmationNoteSerializer
     permission_classes = [BillingConfirmationPermission]
     filterset_class = TravelBillingConfirmationNoteFilter

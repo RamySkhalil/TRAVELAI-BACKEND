@@ -28,6 +28,7 @@ def match_invoice_line(line, user):
         line.ticket_version = ticket_version
         line.travel_case = ticket_version.travel_case
         line.employee = ticket_version.travel_case.employee
+        line.account_type = ticket_version.travel_case.account_type
         line.booked_amount = ticket_version.amount
         line.difference_amount = calculate_line_difference(line.booked_amount, line.invoiced_amount)
         if line.difference_amount == 0:
@@ -43,6 +44,7 @@ def match_invoice_line(line, user):
             "ticket_version",
             "travel_case",
             "employee",
+            "account_type",
             "booked_amount",
             "difference_amount",
             "match_status",
