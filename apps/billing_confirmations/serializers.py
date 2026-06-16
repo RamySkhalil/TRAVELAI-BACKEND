@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from drf_spectacular.utils import OpenApiTypes, extend_schema_field
 
 from apps.supplier_invoices.serializers import SupplierInvoiceLineSerializer
 
@@ -14,6 +15,9 @@ class TravelBillingConfirmationNoteSerializer(serializers.ModelSerializer):
     invoice_record_number = serializers.CharField(source="supplier_invoice.invoice_record_number", read_only=True)
     invoice_status = serializers.CharField(source="supplier_invoice.status", read_only=True)
     invoice_lines = SupplierInvoiceLineSerializer(source="supplier_invoice.lines", many=True, read_only=True)
+    has_pdf = serializers.SerializerMethodField()
+    pdf_url = serializers.SerializerMethodField()
+    pdf_generated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = TravelBillingConfirmationNote
@@ -46,10 +50,36 @@ class TravelBillingConfirmationNoteSerializer(serializers.ModelSerializer):
             "sent_to_finance_at",
             "finance_status",
             "pdf_file",
+            "pdf_url",
+            "has_pdf",
+            "pdf_generated_at",
             "is_locked",
             "invoice_lines",
         ]
         read_only_fields = ("uid", "confirmation_no", "is_locked", "created_at", "updated_at")
+
+    @extend_schema_field(OpenApiTypes.BOOL)
+    def get_has_pdf(self, obj):
+        return bool(obj.pdf_file)
+
+    @extend_schema_field(OpenApiTypes.URI)
+    def get_pdf_url(self, obj):
+        if not obj.pdf_file:
+            return ""
+        try:
+            url = obj.pdf_file.url
+        except ValueError:
+            return ""
+        request = self.context.get("request")
+        if request and url.startswith("/"):
+            return request.build_absolute_uri(url)
+        return url
+
+    @extend_schema_field(OpenApiTypes.DATETIME)
+    def get_pdf_generated_at(self, obj):
+        if not obj.pdf_file:
+            return None
+        return obj.updated_at
 
 
 class TravelBillingConfirmationRevisionSerializer(serializers.ModelSerializer):

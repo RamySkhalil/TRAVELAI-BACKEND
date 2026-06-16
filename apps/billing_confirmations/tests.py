@@ -1,9 +1,12 @@
 from datetime import date
 from decimal import Decimal
+import shutil
+import tempfile
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import TestCase
+from django.core.files.storage.filesystem import FileSystemStorage
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -19,6 +22,21 @@ from config.settings import CLOUDFLARE_R2_REQUIRED_ENV_NAMES, r2_storage_enabled
 
 class TravelBillingConfirmationPhase11Tests(TestCase):
     def setUp(self):
+        self.temp_media = tempfile.mkdtemp()
+        self.storage_override = override_settings(
+            MEDIA_ROOT=self.temp_media,
+            STORAGES={
+                "default": {
+                    "BACKEND": "django.core.files.storage.FileSystemStorage",
+                },
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+                },
+            },
+        )
+        self.storage_override.enable()
+        self.addCleanup(self.storage_override.disable)
+        self.addCleanup(shutil.rmtree, self.temp_media, ignore_errors=True)
         self.client = APIClient()
         self.user_model = get_user_model()
         self.finance_user = self._create_user("finance-user", "Finance")
@@ -194,6 +212,127 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         env = {name: "configured" for name in CLOUDFLARE_R2_REQUIRED_ENV_NAMES}
 
         self.assertTrue(r2_storage_enabled(env))
+
+    def test_cannot_generate_pdf_for_missing_tbcn(self):
+        response = self.client.post("/api/v1/tbcn/999999/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_can_generate_pdf_for_generated_tbcn(self):
+        tbcn = self._generate_tbcn()
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tbcn.refresh_from_db()
+        self.assertTrue(tbcn.pdf_file)
+        self.assertTrue(tbcn.pdf_file.name.endswith(".pdf"))
+        self.assertEqual(response.data["has_pdf"], True)
+        self.assertTrue(response.data["pdf_url"])
+        self.assertIsNotNone(response.data["pdf_generated_at"])
+
+    def test_pdf_generation_does_not_change_finance_status(self):
+        tbcn = self._generate_tbcn()
+        original_status = tbcn.status
+        original_finance_status = tbcn.finance_status
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tbcn.refresh_from_db()
+        self.assertEqual(tbcn.status, original_status)
+        self.assertEqual(tbcn.finance_status, original_finance_status)
+
+    def test_pdf_generation_creates_audit_log(self):
+        tbcn = self._generate_tbcn()
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(AuditLog.objects.filter(action="TBCN PDF Generated", entity_id=tbcn.id).exists())
+
+    def test_cannot_generate_pdf_for_draft_tbcn(self):
+        invoice = self._create_invoice()
+        tbcn = TravelBillingConfirmationNote.objects.create(
+            confirmation_no="TBCN-LY-2026-008888",
+            supplier_invoice=invoice,
+            supplier=self.supplier,
+            supplier_invoice_number=invoice.supplier_invoice_number,
+            total_amount=invoice.total_amount,
+            matched_amount=Decimal("0.00"),
+            difference_amount=Decimal("0.00"),
+            currency=invoice.currency,
+            status=BillingConfirmationStatus.DRAFT,
+        )
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        tbcn.refresh_from_db()
+        self.assertFalse(tbcn.pdf_file)
+
+    def test_serializer_exposes_pdf_availability_safely(self):
+        tbcn = self._generate_tbcn()
+
+        detail_response = self.client.get(f"/api/v1/tbcn/{tbcn.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(detail_response.data["has_pdf"])
+        self.assertEqual(detail_response.data["pdf_url"], "")
+
+        self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+        detail_response = self.client.get(f"/api/v1/tbcn/{tbcn.id}/")
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(detail_response.data["has_pdf"])
+        self.assertNotIn("CLOUDFLARE_R2_SECRET_ACCESS_KEY", str(detail_response.data))
+
+    def test_finance_report_lists_tbcn_records(self):
+        tbcn = self._generate_tbcn()
+
+        response = self.client.get("/api/v1/finance-control-report/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["confirmation_no"], tbcn.confirmation_no)
+
+    def test_finance_report_filters_by_finance_status(self):
+        paid_tbcn = self._generate_tbcn()
+        self.client.post(f"/api/v1/tbcn/{paid_tbcn.id}/send-to-finance/", {}, format="json")
+        self.client.post(f"/api/v1/tbcn/{paid_tbcn.id}/mark-finance-accepted/", {}, format="json")
+        self.client.post(f"/api/v1/tbcn/{paid_tbcn.id}/mark-paid/", {}, format="json")
+        self._generate_tbcn()
+
+        response = self.client.get("/api/v1/finance-control-report/", {"finance_status": FinanceStatus.PAID})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["finance_status"], FinanceStatus.PAID)
+
+    def test_finance_report_csv_export_returns_expected_columns(self):
+        self._generate_tbcn()
+
+        response = self.client.get("/api/v1/finance-control-report/export-csv/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        content = response.content.decode("utf-8")
+        self.assertIn("TBCN number,Supplier,Supplier invoice number,Total amount", content)
+        self.assertIn("PDF available", content)
+
+    def test_pdf_generation_uses_local_storage_fallback_when_configured(self):
+        tbcn = self._generate_tbcn()
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tbcn.refresh_from_db()
+        self.assertIsInstance(tbcn.pdf_file.storage, FileSystemStorage)
+
+    def test_r2_enabled_detection_does_not_expose_secret_values(self):
+        env = {name: f"secret-{index}" for index, name in enumerate(CLOUDFLARE_R2_REQUIRED_ENV_NAMES)}
+
+        self.assertTrue(r2_storage_enabled(env))
+        self.assertNotIn("secret-", ",".join(CLOUDFLARE_R2_REQUIRED_ENV_NAMES))
 
     def _create_user(self, username, group_name):
         user = self.user_model.objects.create_user(username=username, password="test-pass")
