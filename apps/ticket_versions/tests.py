@@ -48,6 +48,43 @@ class TicketVersionExtractionWorkflowTests(TestCase):
         self.assertEqual(ticket.version_number, "V1")
         self.assertEqual(ticket.travel_case, self.travel_case)
         self.assertEqual(ticket.ticket_number, "1761234567890")
+        self.assertEqual(ticket.currency, "USD")
+
+    def test_ticket_version_supports_usd(self):
+        job = self._create_extraction_job(currency="USD")
+
+        response = self.client.post(
+            "/api/v1/ticket-versions/create-from-extraction/",
+            self._create_payload(job, self.travel_case),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["currency"], "USD")
+
+    def test_ticket_version_supports_egp(self):
+        job = self._create_extraction_job(currency="EGP")
+
+        response = self.client.post(
+            "/api/v1/ticket-versions/create-from-extraction/",
+            self._create_payload(job, self.travel_case),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["currency"], "EGP")
+
+    def test_missing_currency_blocks_ticket_version_creation(self):
+        job = self._create_extraction_job(currency="")
+
+        response = self.client.post(
+            "/api/v1/ticket-versions/create-from-extraction/",
+            self._create_payload(job, self.travel_case),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(TicketVersion.objects.count(), 0)
 
     def test_second_confirmed_extraction_creates_v2(self):
         first_job = self._create_extraction_job(ticket_number="1761234567890")
@@ -165,7 +202,7 @@ class TicketVersionExtractionWorkflowTests(TestCase):
             created_by=self.booking_user,
         )
 
-    def _create_extraction_job(self, status=ExtractionStatus.CONFIRMED, ticket_number="1761234567890"):
+    def _create_extraction_job(self, status=ExtractionStatus.CONFIRMED, ticket_number="1761234567890", currency="USD"):
         return DocumentExtractionJob.objects.create(
             document_type=DocumentType.FLIGHT_TICKET,
             status=status,
@@ -182,7 +219,7 @@ class TicketVersionExtractionWorkflowTests(TestCase):
                 "arrival_date": "2026-07-01",
                 "arrival_time": "12:00",
                 "amount": "450.00",
-                "currency": "USD",
+                "currency": currency,
                 "supplier": "Afriqiyah Airways",
                 "confidence": {"ticket_number": 0.98},
                 "missing_critical_fields": [],

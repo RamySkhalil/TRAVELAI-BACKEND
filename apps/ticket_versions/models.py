@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from apps.common.models import TimeStampedModel
+from apps.common.models import CurrencyChoices, TimeStampedModel
 from apps.master_data.models import Supplier
 from apps.travel_cases.models import TravelCase
 
@@ -43,7 +43,7 @@ class TicketVersion(TimeStampedModel):
     arrival_date = models.DateField(null=True, blank=True)
     arrival_time = models.TimeField(null=True, blank=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    currency = models.CharField(max_length=3, default="USD")
+    currency = models.CharField(max_length=3, choices=CurrencyChoices.choices)
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="ticket_versions")
     ticket_status = models.CharField(max_length=20, choices=TicketStatus.choices, default=TicketStatus.DRAFT)
     penalty_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)

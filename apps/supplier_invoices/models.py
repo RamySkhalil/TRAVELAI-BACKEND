@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from apps.common.models import TimeStampedModel, UUIDModel
+from apps.common.models import CurrencyChoices, TimeStampedModel, UUIDModel
 from apps.master_data.models import Employee, Supplier
 from apps.ticket_versions.models import TicketVersion
 from apps.travel_cases.models import AccountType, TravelCase
@@ -36,7 +36,7 @@ class SupplierInvoice(UUIDModel, TimeStampedModel):
     supplier_invoice_number = models.CharField(max_length=80)
     invoice_date = models.DateField()
     received_date = models.DateField()
-    currency = models.CharField(max_length=3, default="USD")
+    currency = models.CharField(max_length=3, choices=CurrencyChoices.choices)
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)
     invoice_file = models.FileField(upload_to="supplier-invoices/%Y/%m/", blank=True)
     status = models.CharField(max_length=30, choices=SupplierInvoiceStatus.choices, default=SupplierInvoiceStatus.INVOICE_RECEIVED)
@@ -76,6 +76,7 @@ class SupplierInvoiceLine(TimeStampedModel):
     booked_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     invoiced_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     difference_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, choices=CurrencyChoices.choices)
     account_type = models.CharField(max_length=20, choices=AccountType.choices)
     match_status = models.CharField(max_length=20, choices=MatchStatus.choices, default=MatchStatus.UNMATCHED)
     exception_reason = models.TextField(blank=True)

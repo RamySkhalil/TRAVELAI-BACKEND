@@ -84,6 +84,7 @@ class OpenAIExtractionProvider(BaseExtractionProvider):
 def _ticket_prompt() -> str:
     return (
         "Extract a flight ticket for a travel operations system. Return strict JSON only. "
+        "Supported currencies are USD and EGP. Extract currency from the document; if absent, leave currency blank. "
         "Do not create business records. Use exactly this shape, preserving keys: "
         f"{json.dumps(TICKET_TEMPLATE)}"
     )
@@ -92,6 +93,7 @@ def _ticket_prompt() -> str:
 def _invoice_prompt() -> str:
     return (
         "Extract a supplier invoice for a travel operations system. Return strict JSON only. "
+        "Supported currencies are USD and EGP. Extract invoice and line currency from the document; if absent, leave currency blank. "
         "Do not create business records. Use exactly this shape, preserving keys: "
         f"{json.dumps(INVOICE_TEMPLATE)}"
     )

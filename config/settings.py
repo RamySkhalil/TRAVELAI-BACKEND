@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'apps.audit_logs',
     'apps.dashboard',
     'apps.ai_extraction',
+    'apps.copilot',
     'apps.common',
 ]
 

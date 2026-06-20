@@ -37,6 +37,9 @@ def generate_tbcn(supplier_invoice, user) -> TravelBillingConfirmationNote:
         lines = list(supplier_invoice.lines.select_related("travel_case__country", "ticket_version").all())
         if not lines:
             raise ValidationError("TBCN cannot be generated without invoice lines.")
+        invoice_line_currencies = {line.currency for line in lines}
+        if invoice_line_currencies != {supplier_invoice.currency}:
+            raise ValidationError("TBCN generation requires all invoice lines to use the supplier invoice currency.")
         country_code = next((line.travel_case.country.code for line in lines if line.travel_case_id), "LY")
         year = supplier_invoice.invoice_date.year if supplier_invoice.invoice_date else date.today().year
         matched_amount = sum((line.invoiced_amount for line in lines), start=0)
@@ -124,6 +127,7 @@ def _build_tbcn_pdf_bytes(tbcn: TravelBillingConfirmationNote, user) -> bytes:
         topMargin=12 * mm,
         bottomMargin=12 * mm,
         title=f"Travel Billing Confirmation Note {tbcn.confirmation_no}",
+        pageCompression=0,
     )
     styles = getSampleStyleSheet()
     normal = styles["BodyText"]

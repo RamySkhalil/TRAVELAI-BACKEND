@@ -29,6 +29,9 @@ class MockExtractionProvider(BaseExtractionProvider):
                 }
             )
 
+        currency = _currency_from_text(text) or "USD"
+        if "missing currency" in text.lower():
+            currency = ""
         return normalize_ticket_result(
             {
                 "passenger_name": "Aisha Mohamed",
@@ -42,7 +45,7 @@ class MockExtractionProvider(BaseExtractionProvider):
                 "arrival_date": "2026-07-01",
                 "arrival_time": "11:30",
                 "amount": "450.00",
-                "currency": "USD",
+                "currency": currency,
                 "supplier": "Mock Travel Supplier",
                 "booking_reference": "BR-001",
                 "ticket_status": "DRAFT",
@@ -54,18 +57,23 @@ class MockExtractionProvider(BaseExtractionProvider):
                     "route": 0.94,
                     "departure_date": 0.93,
                     "amount": 0.95,
+                    "currency": 0.95 if currency else 0.0,
                     "supplier": 0.92,
                 },
             }
         )
 
     def extract_invoice(self, file_or_text):
+        text = str(file_or_text or "")
+        currency = _currency_from_text(text) or "USD"
+        if "missing currency" in text.lower():
+            currency = ""
         return normalize_invoice_result(
             {
                 "supplier_name": "Mock Travel Supplier",
                 "supplier_invoice_number": "INV-2026-001",
                 "invoice_date": "2026-07-05",
-                "currency": "USD",
+                "currency": currency,
                 "total_amount": "450.00",
                 "lines": [
                     {
@@ -74,15 +82,25 @@ class MockExtractionProvider(BaseExtractionProvider):
                         "route_from": "CAI",
                         "route_to": "TIP",
                         "amount": "450.00",
-                        "currency": "USD",
+                        "currency": currency,
                     }
                 ],
                 "confidence": {
                     "supplier_name": 0.97,
                     "supplier_invoice_number": 0.98,
                     "invoice_date": 0.94,
+                    "currency": 0.95 if currency else 0.0,
                     "total_amount": 0.96,
                     "lines": 0.93,
                 },
             }
         )
+
+
+def _currency_from_text(text: str) -> str:
+    upper_text = text.upper()
+    if "EGP" in upper_text:
+        return "EGP"
+    if "USD" in upper_text:
+        return "USD"
+    return ""

@@ -28,7 +28,8 @@ class Command(BaseCommand):
         user_model = get_user_model()
 
         with transaction.atomic():
-            groups = {name: Group.objects.get_or_create(name=name)[0] for name in GROUP_NAMES}
+            Group.objects.bulk_create([Group(name=name) for name in GROUP_NAMES], ignore_conflicts=True)
+            groups = {group.name: group for group in Group.objects.filter(name__in=GROUP_NAMES)}
 
             for user_config in DEMO_USERS:
                 username = user_config["username"]

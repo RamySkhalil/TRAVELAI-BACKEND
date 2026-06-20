@@ -3,6 +3,11 @@ import uuid
 from django.db import models
 
 
+class CurrencyChoices(models.TextChoices):
+    USD = "USD", "US Dollar"
+    EGP = "EGP", "Egyptian Pound"
+
+
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

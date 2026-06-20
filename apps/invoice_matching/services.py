@@ -16,6 +16,7 @@ def match_invoice_line(line, user):
         "travel_case": line.travel_case_id,
         "booked_amount": str(line.booked_amount),
         "difference_amount": str(line.difference_amount),
+        "currency": line.currency,
         "match_status": line.match_status,
         "exception_reason": line.exception_reason,
     }
@@ -30,13 +31,22 @@ def match_invoice_line(line, user):
         line.employee = ticket_version.travel_case.employee
         line.account_type = ticket_version.travel_case.account_type
         line.booked_amount = ticket_version.amount
-        line.difference_amount = calculate_line_difference(line.booked_amount, line.invoiced_amount)
-        if line.difference_amount == 0:
-            line.match_status = MatchStatus.MATCHED
-            line.exception_reason = ""
+        if ticket_version.currency != line.currency:
+            line.difference_amount = 0
+            line.match_status = MatchStatus.EXCEPTION
+            line.exception_reason = f"Currency mismatch: ticket is {ticket_version.currency}, invoice line is {line.currency}"
+            metadata["currency_mismatch"] = {
+                "ticket_currency": ticket_version.currency,
+                "invoice_line_currency": line.currency,
+            }
         else:
-            line.match_status = MatchStatus.DIFFERENCE
-            line.exception_reason = "Invoice amount differs from booked ticket amount"
+            line.difference_amount = calculate_line_difference(line.booked_amount, line.invoiced_amount)
+            if line.difference_amount == 0:
+                line.match_status = MatchStatus.MATCHED
+                line.exception_reason = ""
+            else:
+                line.match_status = MatchStatus.DIFFERENCE
+                line.exception_reason = "Invoice amount differs from booked ticket amount"
         if ticket_version.travel_case.account_type == "PERSONAL":
             metadata["personal_account_flag"] = True
     line.save(
@@ -61,6 +71,20 @@ def match_invoice_line(line, user):
         new_value={"match_status": line.match_status, "difference_amount": str(line.difference_amount)},
         metadata=metadata,
     )
+    if metadata.get("currency_mismatch"):
+        create_audit_log(
+            user=user,
+            action="Invoice Line Currency Mismatch",
+            entity_type="SupplierInvoiceLine",
+            entity_id=line.id,
+            old_value=old_value,
+            new_value={
+                "match_status": line.match_status,
+                "exception_reason": line.exception_reason,
+                "difference_amount": str(line.difference_amount),
+            },
+            metadata=metadata["currency_mismatch"],
+        )
     return line
 
 

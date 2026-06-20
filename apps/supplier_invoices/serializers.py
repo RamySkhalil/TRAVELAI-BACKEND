@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.common.currency import normalize_currency
+
 from .models import SupplierInvoice, SupplierInvoiceLine
 
 
@@ -8,6 +10,7 @@ class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
     travel_case_number = serializers.CharField(source="travel_case.case_number", read_only=True)
     ticket_version_number = serializers.CharField(source="ticket_version.version_number", read_only=True)
     ticket_version_ticket_number = serializers.CharField(source="ticket_version.ticket_number", read_only=True)
+    ticket_version_currency = serializers.CharField(source="ticket_version.currency", read_only=True)
     employee_name = serializers.CharField(source="employee.full_name", read_only=True)
 
     class Meta:
@@ -23,6 +26,7 @@ class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
             "ticket_version",
             "ticket_version_number",
             "ticket_version_ticket_number",
+            "ticket_version_currency",
             "employee",
             "employee_name",
             "ticket_number",
@@ -31,12 +35,22 @@ class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
             "booked_amount",
             "invoiced_amount",
             "difference_amount",
+            "currency",
             "account_type",
             "match_status",
             "exception_reason",
             "is_locked",
         ]
         read_only_fields = ("difference_amount", "is_locked", "created_at", "updated_at")
+
+    def validate_currency(self, value):
+        return normalize_currency(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None and not attrs.get("currency"):
+            raise serializers.ValidationError({"currency": "Currency is required for supplier invoice lines."})
+        return attrs
 
 
 class SupplierInvoiceSerializer(serializers.ModelSerializer):
@@ -88,3 +102,6 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+
+    def validate_currency(self, value):
+        return normalize_currency(value)

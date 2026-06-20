@@ -94,6 +94,28 @@ class AiExtractionProviderFoundationTests(TestCase):
         self.assertEqual(job.status, ExtractionStatus.NEEDS_REVIEW)
         self.assertIn("ticket_number", job.missing_critical_fields)
 
+    def test_ticket_extraction_does_not_silently_force_usd_when_currency_missing(self):
+        job = create_extraction_job(DocumentType.FLIGHT_TICKET, raw_text="ticket missing currency", user=self.user)
+
+        run_ticket_extraction(job, "mock", self.user)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExtractionStatus.NEEDS_REVIEW)
+        self.assertEqual(job.normalized_data["currency"], "")
+        self.assertIn("currency", job.missing_critical_fields)
+
+    def test_invoice_extraction_marks_missing_line_currency_for_review(self):
+        job = create_extraction_job(DocumentType.SUPPLIER_INVOICE, raw_text="invoice missing currency", user=self.user)
+
+        run_invoice_extraction(job, "mock", self.user)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ExtractionStatus.NEEDS_REVIEW)
+        self.assertEqual(job.normalized_data["currency"], "")
+        self.assertEqual(job.normalized_data["lines"][0]["currency"], "")
+        self.assertIn("currency", job.missing_critical_fields)
+        self.assertIn("lines.currency", job.missing_critical_fields)
+
     def test_confirm_extraction_job_sets_status_confirmed(self):
         job = create_extraction_job(DocumentType.FLIGHT_TICKET, raw_text="ticket", user=self.user)
         run_ticket_extraction(job, "mock", self.user)

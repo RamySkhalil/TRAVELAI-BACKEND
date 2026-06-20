@@ -7,6 +7,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.ai_extraction.models import DocumentExtractionJob, DocumentType, ExtractionStatus
 from apps.audit_logs.services import create_audit_log
+from apps.common.currency import normalize_currency
 from apps.common.services.locking import ensure_unlocked, lock_instance
 from apps.common.services.sequences import generate_sequence
 from apps.master_data.models import Supplier
@@ -44,6 +45,7 @@ def create_supplier_invoice(data, user) -> SupplierInvoice:
     data = dict(data)
     country_code = data.pop("country_code", "LY")
     invoice_date = data.get("invoice_date") or date.today()
+    data["currency"] = normalize_currency(data.get("currency"))
     data["invoice_record_number"] = next_supplier_invoice_record_number(country_code, invoice_date.year)
     data["created_by"] = user
     invoice = SupplierInvoice.objects.create(**data)
@@ -59,6 +61,10 @@ def create_supplier_invoice(data, user) -> SupplierInvoice:
 
 def create_invoice_line(invoice: SupplierInvoice, data, user) -> SupplierInvoiceLine:
     ensure_invoice_editable(invoice)
+    data = dict(data)
+    data["currency"] = normalize_currency(data.get("currency") or invoice.currency)
+    if data["currency"] != invoice.currency:
+        raise ValidationError({"currency": "Supplier invoice lines must use the supplier invoice currency."})
     line = SupplierInvoiceLine.objects.create(supplier_invoice=invoice, **data)
     create_audit_log(
         user=user,
@@ -101,7 +107,7 @@ def create_supplier_invoice_from_confirmed_extraction(
                 "supplier_invoice_number": _required_text(data, "supplier_invoice_number"),
                 "invoice_date": invoice_date,
                 "received_date": received_date,
-                "currency": str(data.get("currency") or "USD").upper()[:3],
+                "currency": normalize_currency(data.get("currency")),
                 "total_amount": _required_decimal(data, "total_amount"),
                 "status": SupplierInvoiceStatus.AWAITING_MATCHING,
                 "extracted_data_json": extraction_job.normalized_data or {},
@@ -111,7 +117,7 @@ def create_supplier_invoice_from_confirmed_extraction(
             user,
         )
         for line_data in invoice_lines:
-            create_invoice_line(invoice, _invoice_line_data_from_extraction(line_data), user)
+            create_invoice_line(invoice, _invoice_line_data_from_extraction(line_data, invoice.currency), user)
         create_audit_log(
             user=user,
             action="Supplier Invoice Created From Extraction",
@@ -128,6 +134,8 @@ def approve_supplier_invoice(invoice: SupplierInvoice, user) -> SupplierInvoice:
     lines = list(invoice.lines.all())
     if not lines:
         raise ValidationError("Supplier invoice cannot be approved without invoice lines.")
+    if any(line.currency != invoice.currency for line in lines):
+        raise ValidationError("Supplier invoice cannot be approved while line currencies differ from the invoice currency.")
     invalid_statuses = {MatchStatus.UNMATCHED, MatchStatus.DIFFERENCE, MatchStatus.EXCEPTION, MatchStatus.REJECTED}
     if any(line.match_status in invalid_statuses for line in lines):
         raise ValidationError("Supplier invoice can only be approved when all lines are matched or approved.")
@@ -163,12 +171,14 @@ def lock_supplier_invoice(invoice: SupplierInvoice, user=None) -> SupplierInvoic
     return invoice
 
 
-def _invoice_line_data_from_extraction(data: dict) -> dict:
+def _invoice_line_data_from_extraction(data: dict, invoice_currency: str) -> dict:
+    line_currency = normalize_currency(data.get("currency") or invoice_currency)
     return {
         "ticket_number": _required_text(data, "ticket_number"),
         "route_from": str(data.get("route_from") or "").strip(),
         "route_to": str(data.get("route_to") or "").strip(),
         "invoiced_amount": _required_decimal(data, "amount", fallback_keys=("invoiced_amount",)),
+        "currency": line_currency,
         "account_type": data.get("account_type") if data.get("account_type") in AccountType.values else AccountType.COMPANY,
     }
 

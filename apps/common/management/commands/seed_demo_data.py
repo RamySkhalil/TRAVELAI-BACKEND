@@ -40,6 +40,10 @@ class Command(BaseCommand):
                 code="LY",
                 defaults={"name": "Libya", "is_active": True},
             )
+            egypt, _ = Country.objects.update_or_create(
+                code="EG",
+                defaults={"name": "Egypt", "is_active": True},
+            )
             operations, _ = Department.objects.update_or_create(
                 code="DEMO-OPS",
                 defaults={"name": "Demo Operations", "is_active": True},
@@ -56,13 +60,22 @@ class Command(BaseCommand):
                 code="DEMO-TRIPOLI",
                 defaults={"name": "Demo Tripoli HQ", "country": libya, "cost_center": "DEMO-CC-002", "is_active": True},
             )
+            cairo, _ = Project.objects.update_or_create(
+                code="DEMO-CAIRO",
+                defaults={"name": "Demo Cairo Local Ops", "country": egypt, "cost_center": "DEMO-CC-003", "is_active": True},
+            )
             supplier, _ = Supplier.objects.update_or_create(
                 code="DEMO-AIR",
                 defaults={"name": "Demo Air Supplier", "contact_name": "Demo Contact", "email": "supplier@demo.local", "is_active": True},
             )
+            local_supplier, _ = Supplier.objects.update_or_create(
+                code="DEMO-EG-LOCAL",
+                defaults={"name": "Demo Egypt Local Supplier", "contact_name": "Demo Contact", "email": "egypt-local@demo.local", "is_active": True},
+            )
 
             for origin, destination in (("TIP", "IST"), ("TIP", "TUN"), ("BEN", "TIP")):
                 Route.objects.get_or_create(origin=origin, destination=destination, country=libya, defaults={"is_active": True})
+            Route.objects.get_or_create(origin="CAI", destination="HBE", country=egypt, defaults={"is_active": True})
 
             employees = [
                 Employee.objects.update_or_create(
@@ -98,9 +111,21 @@ class Command(BaseCommand):
                         "is_active": True,
                     },
                 )[0],
+                Employee.objects.update_or_create(
+                    badge_number="DEMO-EMP-004",
+                    defaults={
+                        "full_name": "Mona Demo",
+                        "project": cairo,
+                        "department": logistics,
+                        "job_title": "Local Permit Coordinator",
+                        "email": "mona.demo@demo.local",
+                        "is_active": True,
+                    },
+                )[0],
             ]
 
             self._reconcile_travel_case_sequence("TRV-LY", 2026)
+            self._reconcile_travel_case_sequence("TRV-EG", 2026)
 
             cases = [
                 self._get_or_create_case(
@@ -139,6 +164,18 @@ class Command(BaseCommand):
                     priority=Priority.LOW,
                     user=user,
                 ),
+                self._get_or_create_case(
+                    employee=employees[3],
+                    project=cairo,
+                    department=logistics,
+                    country=egypt,
+                    route_from="CAI",
+                    route_to="HBE",
+                    requested_travel_date=date(2026, 6, 29),
+                    requested_return_date=None,
+                    priority=Priority.NORMAL,
+                    user=user,
+                ),
             ]
 
             TicketVersion.objects.get_or_create(
@@ -168,6 +205,36 @@ class Command(BaseCommand):
                     "issue_date": None,
                     "expiry_date": date(2026, 12, 31),
                     "notes": "Demo local permit record.",
+                    "created_by": user,
+                },
+            )
+            TicketVersion.objects.get_or_create(
+                travel_case=cases[3],
+                version_number="V1",
+                defaults={
+                    "ticket_action": TicketAction.ORIGINAL,
+                    "passenger_name": cases[3].employee_name,
+                    "ticket_number": "DEMO-EG-000001",
+                    "pnr": "DMO1EG",
+                    "airline": "Demo Egypt Local Supplier",
+                    "route_from": cases[3].route_from,
+                    "route_to": cases[3].route_to,
+                    "departure_date": cases[3].requested_travel_date,
+                    "amount": "18500.00",
+                    "currency": "EGP",
+                    "supplier": local_supplier,
+                    "ticket_status": TicketStatus.ACTIVE,
+                    "confirmed_by": user,
+                },
+            )
+            Permit.objects.get_or_create(
+                travel_case=cases[3],
+                permit_type=PermitType.EGYPT_PERMIT,
+                defaults={
+                    "status": PermitStatus.PENDING,
+                    "issue_date": None,
+                    "expiry_date": date(2026, 12, 31),
+                    "notes": "Demo Egypt local permit record in EGP workflow.",
                     "created_by": user,
                 },
             )

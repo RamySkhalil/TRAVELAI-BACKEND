@@ -90,6 +90,7 @@ class SupplierInvoicePhase10Tests(TestCase):
         self.assertEqual(invoice.supplier, self.supplier)
         self.assertEqual(invoice.supplier_invoice_number, "INV-AFR-7000")
         self.assertEqual(invoice.status, SupplierInvoiceStatus.AWAITING_MATCHING)
+        self.assertEqual(invoice.currency, "USD")
 
     def test_supplier_invoice_gets_sir_number(self):
         job = self._create_extraction_job()
@@ -115,6 +116,23 @@ class SupplierInvoicePhase10Tests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(SupplierInvoiceLine.objects.count(), 2)
         self.assertEqual(response.data["lines"][0]["ticket_number"], "1761234567890")
+        self.assertEqual(response.data["lines"][0]["currency"], "USD")
+
+    def test_supplier_invoice_supports_usd(self):
+        invoice = self._create_invoice(currency="USD")
+
+        self.assertEqual(invoice.currency, "USD")
+
+    def test_supplier_invoice_supports_egp(self):
+        invoice = self._create_invoice(currency="EGP")
+
+        self.assertEqual(invoice.currency, "EGP")
+
+    def test_supplier_invoice_line_currency_is_stored(self):
+        invoice = self._create_invoice(currency="EGP")
+        line = self._create_line(invoice, currency="EGP", invoiced_amount=Decimal("18500.00"))
+
+        self.assertEqual(line.currency, "EGP")
 
     def test_matching_links_line_to_ticket_version_by_ticket_number(self):
         invoice = self._create_invoice()
@@ -127,6 +145,20 @@ class SupplierInvoicePhase10Tests(TestCase):
         self.assertEqual(line.ticket_version, self.ticket_version)
         self.assertEqual(line.travel_case, self.travel_case)
         self.assertEqual(line.match_status, MatchStatus.MATCHED)
+        self.assertEqual(line.difference_amount, Decimal("0.00"))
+
+    def test_matching_flags_currency_mismatch(self):
+        invoice = self._create_invoice(currency="EGP", total_amount=Decimal("450.00"))
+        line = self._create_line(invoice, currency="EGP")
+
+        response = self.client.post("/api/v1/invoice-matching/match-invoice/", {"supplier_invoice": invoice.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        line.refresh_from_db()
+        self.assertEqual(line.match_status, MatchStatus.EXCEPTION)
+        self.assertEqual(line.difference_amount, Decimal("0.00"))
+        self.assertIn("Currency mismatch", line.exception_reason)
+        self.assertTrue(AuditLog.objects.filter(action="Invoice Line Currency Mismatch", entity_id=line.id).exists())
 
     def test_amount_difference_becomes_difference(self):
         invoice = self._create_invoice(total_amount=Decimal("460.00"))
@@ -242,23 +274,25 @@ class SupplierInvoicePhase10Tests(TestCase):
     def _create_payload(self, job):
         return {"extraction_job": job.id, "supplier": self.supplier.id, "overrides": {}}
 
-    def _create_invoice(self, total_amount=Decimal("450.00")):
+    def _create_invoice(self, total_amount=Decimal("450.00"), currency="USD"):
         return SupplierInvoice.objects.create(
             invoice_record_number=f"SIR-LY-2026-{SupplierInvoice.objects.count() + 1:06d}",
             supplier=self.supplier,
             supplier_invoice_number=f"INV-AFR-{SupplierInvoice.objects.count() + 8000}",
             invoice_date=date(2026, 7, 5),
             received_date=date(2026, 7, 6),
+            currency=currency,
             total_amount=total_amount,
             created_by=self.hr_user,
         )
 
-    def _create_line(self, invoice, ticket_number="1761234567890", invoiced_amount=Decimal("450.00")):
+    def _create_line(self, invoice, ticket_number="1761234567890", invoiced_amount=Decimal("450.00"), currency=None):
         return SupplierInvoiceLine.objects.create(
             supplier_invoice=invoice,
             ticket_number=ticket_number,
             route_from="CAI",
             route_to="TIP",
             invoiced_amount=invoiced_amount,
+            currency=currency or invoice.currency,
             account_type=AccountType.COMPANY,
         )

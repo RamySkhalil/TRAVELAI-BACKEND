@@ -102,6 +102,17 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         self.assertEqual(response.data["confirmation_no"], "TBCN-LY-2026-000001")
         self.assertEqual(response.data["status"], BillingConfirmationStatus.GENERATED)
         self.assertEqual(response.data["finance_status"], FinanceStatus.NOT_SENT)
+        self.assertEqual(response.data["currency"], "USD")
+
+    def test_tbcn_generation_preserves_invoice_currency(self):
+        invoice = self._create_invoice(currency="EGP", total_amount=Decimal("18500.00"))
+        self._create_line(invoice, invoiced_amount=Decimal("18500.00"), currency="EGP")
+
+        response = self.client.post("/api/v1/tbcn/generate-tbcn/", {"supplier_invoice": invoice.id}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["currency"], "EGP")
+        self.assertEqual(response.data["total_amount"], "18500.00")
 
     def test_tbcn_locks_invoice_lines_and_linked_ticket_versions(self):
         invoice = self._create_invoice()
@@ -231,6 +242,20 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         self.assertTrue(response.data["pdf_url"])
         self.assertIsNotNone(response.data["pdf_generated_at"])
 
+    def test_tbcn_pdf_includes_currency(self):
+        tbcn = self._generate_tbcn(currency="EGP", total_amount=Decimal("18500.00"))
+
+        response = self.client.post(f"/api/v1/tbcn/{tbcn.id}/generate-pdf/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tbcn.refresh_from_db()
+        tbcn.pdf_file.open("rb")
+        try:
+            content = tbcn.pdf_file.read()
+        finally:
+            tbcn.pdf_file.close()
+        self.assertIn(b"EGP", content)
+
     def test_pdf_generation_does_not_change_finance_status(self):
         tbcn = self._generate_tbcn()
         original_status = tbcn.status
@@ -308,6 +333,17 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["finance_status"], FinanceStatus.PAID)
 
+    def test_finance_report_filters_and_displays_currency(self):
+        self._generate_tbcn(currency="USD", total_amount=Decimal("450.00"))
+        egp_tbcn = self._generate_tbcn(currency="EGP", total_amount=Decimal("18500.00"))
+
+        response = self.client.get("/api/v1/finance-control-report/", {"currency": "EGP"})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["confirmation_no"], egp_tbcn.confirmation_no)
+        self.assertEqual(response.data[0]["currency"], "EGP")
+
     def test_finance_report_csv_export_returns_expected_columns(self):
         self._generate_tbcn()
 
@@ -340,21 +376,22 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         user.groups.add(group)
         return user
 
-    def _create_invoice(self, status_value=SupplierInvoiceStatus.HR_APPROVED):
+    def _create_invoice(self, status_value=SupplierInvoiceStatus.HR_APPROVED, currency="USD", total_amount=Decimal("450.00")):
         return SupplierInvoice.objects.create(
             invoice_record_number=f"SIR-LY-2026-{SupplierInvoice.objects.count() + 1:06d}",
             supplier=self.supplier,
             supplier_invoice_number=f"INV-AFR-{SupplierInvoice.objects.count() + 8000}",
             invoice_date=date(2026, 7, 5),
             received_date=date(2026, 7, 6),
-            currency="USD",
-            total_amount=Decimal("450.00"),
+            currency=currency,
+            total_amount=total_amount,
             status=status_value,
             created_by=self.finance_user,
             approved_by=self.finance_user if status_value == SupplierInvoiceStatus.HR_APPROVED else None,
         )
 
-    def _create_line(self, invoice):
+    def _create_line(self, invoice, invoiced_amount=None, currency=None):
+        line_amount = invoiced_amount or invoice.total_amount
         return SupplierInvoiceLine.objects.create(
             supplier_invoice=invoice,
             travel_case=self.travel_case,
@@ -363,16 +400,17 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
             ticket_number=self.ticket_version.ticket_number,
             route_from="CAI",
             route_to="TIP",
-            booked_amount=Decimal("450.00"),
-            invoiced_amount=Decimal("450.00"),
+            booked_amount=line_amount,
+            invoiced_amount=line_amount,
             difference_amount=Decimal("0.00"),
+            currency=currency or invoice.currency,
             account_type=AccountType.COMPANY,
             match_status=MatchStatus.MATCHED,
         )
 
-    def _generate_tbcn(self):
-        invoice = self._create_invoice()
-        self._create_line(invoice)
+    def _generate_tbcn(self, currency="USD", total_amount=Decimal("450.00")):
+        invoice = self._create_invoice(currency=currency, total_amount=total_amount)
+        self._create_line(invoice, invoiced_amount=total_amount, currency=currency)
         response = self.client.post("/api/v1/tbcn/generate-tbcn/", {"supplier_invoice": invoice.id}, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return TravelBillingConfirmationNote.objects.get(id=response.data["id"])

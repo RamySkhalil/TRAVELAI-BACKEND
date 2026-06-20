@@ -31,6 +31,7 @@ TICKET_TEMPLATE: dict[str, Any] = {
         "route": 0.0,
         "departure_date": 0.0,
         "amount": 0.0,
+        "currency": 0.0,
         "supplier": 0.0,
     },
     "missing_critical_fields": [],
@@ -57,6 +58,7 @@ INVOICE_TEMPLATE: dict[str, Any] = {
         "supplier_name": 0.0,
         "supplier_invoice_number": 0.0,
         "invoice_date": 0.0,
+        "currency": 0.0,
         "total_amount": 0.0,
         "lines": 0.0,
     },
@@ -71,6 +73,7 @@ TICKET_CRITICAL_FIELDS = (
     "route_to",
     "departure_date",
     "amount",
+    "currency",
     "supplier",
 )
 
@@ -139,6 +142,8 @@ def normalize_invoice_result(data: dict[str, Any]) -> dict[str, Any]:
         missing_fields.append("lines.ticket_number")
     if any(not line.get("amount") for line in normalized["lines"]):
         missing_fields.append("lines.amount")
+    if any(not line.get("currency") for line in normalized["lines"]):
+        missing_fields.append("lines.currency")
     normalized["missing_critical_fields"] = missing_fields
     return normalized
 

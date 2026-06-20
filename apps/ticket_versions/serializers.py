@@ -1,9 +1,14 @@
 from rest_framework import serializers
 
+from apps.common.currency import normalize_currency
+
 from .models import TicketVersion
 
 
 class TicketVersionSerializer(serializers.ModelSerializer):
+    def validate_currency(self, value):
+        return normalize_currency(value)
+
     class Meta:
         model = TicketVersion
         fields = "__all__"

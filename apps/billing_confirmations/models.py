@@ -3,7 +3,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.common.models import TimeStampedModel, UUIDModel
+from apps.common.models import CurrencyChoices, TimeStampedModel, UUIDModel
 from apps.master_data.models import Supplier
 from apps.supplier_invoices.models import SupplierInvoice
 
@@ -35,7 +35,7 @@ class TravelBillingConfirmationNote(UUIDModel, TimeStampedModel):
     total_amount = models.DecimalField(max_digits=14, decimal_places=2)
     matched_amount = models.DecimalField(max_digits=14, decimal_places=2)
     difference_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    currency = models.CharField(max_length=3, default="USD")
+    currency = models.CharField(max_length=3, choices=CurrencyChoices.choices)
     status = models.CharField(max_length=30, choices=BillingConfirmationStatus.choices, default=BillingConfirmationStatus.DRAFT)
     generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="generated_tbcn")
     generated_at = models.DateTimeField(default=timezone.now)

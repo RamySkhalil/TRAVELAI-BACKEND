@@ -6,6 +6,7 @@ from django.utils.dateparse import parse_date, parse_time
 from rest_framework.exceptions import ValidationError
 
 from apps.audit_logs.services import create_audit_log
+from apps.common.currency import normalize_currency
 from apps.common.services.locking import ensure_unlocked, lock_instance
 from apps.master_data.models import Supplier
 
@@ -28,6 +29,7 @@ def get_next_version_number(travel_case) -> str:
 
 def create_ticket_version_from_confirmed_data(travel_case, data, user) -> TicketVersion:
     data = dict(data)
+    data["currency"] = normalize_currency(data.get("currency"))
     with transaction.atomic():
         data["travel_case"] = travel_case
         data["version_number"] = get_next_version_number(travel_case)
@@ -84,7 +86,7 @@ def _ticket_data_from_extraction(data: dict, ticket_action: str, extraction_job)
         "arrival_date": _optional_date(data.get("arrival_date")),
         "arrival_time": _optional_time(data.get("arrival_time")),
         "amount": _required_decimal(data, "amount"),
-        "currency": str(data.get("currency") or "USD").upper()[:3],
+        "currency": normalize_currency(data.get("currency")),
         "supplier": _supplier_from_extraction(data.get("supplier")),
         "ticket_status": data.get("ticket_status") if data.get("ticket_status") in TicketStatus.values else TicketStatus.DRAFT,
         "penalty_amount": _optional_decimal(data.get("penalty_amount")),

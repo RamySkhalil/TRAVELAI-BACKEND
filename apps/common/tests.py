@@ -67,6 +67,7 @@ class BackendFoundationTests(TestCase):
             route_to="IST",
             departure_date=date(2026, 6, 24),
             amount=Decimal("1180.00"),
+            currency="USD",
             supplier=self.supplier,
         )
         self.invoice = SupplierInvoice.objects.create(
@@ -75,6 +76,7 @@ class BackendFoundationTests(TestCase):
             supplier_invoice_number="INV-AFR-5521",
             invoice_date=date(2026, 6, 12),
             received_date=date(2026, 6, 14),
+            currency="USD",
             total_amount=Decimal("1180.00"),
             created_by=self.user,
         )
@@ -100,6 +102,7 @@ class BackendFoundationTests(TestCase):
                 supplier_invoice_number="INV-AFR-5521",
                 invoice_date=date(2026, 6, 13),
                 received_date=date(2026, 6, 15),
+                currency="USD",
                 total_amount=Decimal("200.00"),
             )
 
@@ -116,6 +119,7 @@ class BackendFoundationTests(TestCase):
                 route_to="IST",
                 departure_date=date(2026, 6, 25),
                 amount=Decimal("1200.00"),
+                currency="USD",
                 supplier=self.supplier,
             )
 
@@ -130,9 +134,11 @@ class BackendFoundationTests(TestCase):
         call_command("seed_demo_data", verbosity=0)
         call_command("seed_demo_data", verbosity=0)
 
-        self.assertEqual(Employee.objects.filter(badge_number__startswith="DEMO-EMP-").count(), 3)
-        self.assertEqual(TravelCase.objects.filter(notes__contains="seed_demo_data").count(), 3)
-        self.assertEqual(Project.objects.filter(code__in=["DEMO-SIRTE", "DEMO-TRIPOLI"]).count(), 2)
+        self.assertEqual(Employee.objects.filter(badge_number__startswith="DEMO-EMP-").count(), 4)
+        self.assertEqual(TravelCase.objects.filter(notes__contains="seed_demo_data").count(), 4)
+        self.assertEqual(Project.objects.filter(code__in=["DEMO-SIRTE", "DEMO-TRIPOLI", "DEMO-CAIRO"]).count(), 3)
+        self.assertTrue(TicketVersion.objects.filter(currency="USD").exists())
+        self.assertTrue(TicketVersion.objects.filter(currency="EGP").exists())
 
     def test_tbcn_confirmation_no_is_unique(self):
         TravelBillingConfirmationNote.objects.create(
@@ -142,6 +148,7 @@ class BackendFoundationTests(TestCase):
             supplier_invoice_number=self.invoice.supplier_invoice_number,
             total_amount=Decimal("1180.00"),
             matched_amount=Decimal("1180.00"),
+            currency="USD",
             status=BillingConfirmationStatus.GENERATED,
             generated_by=self.user,
         )
@@ -151,6 +158,7 @@ class BackendFoundationTests(TestCase):
             supplier_invoice_number="INV-AFR-5522",
             invoice_date=date(2026, 6, 13),
             received_date=date(2026, 6, 15),
+            currency="USD",
             total_amount=Decimal("500.00"),
         )
 
@@ -162,6 +170,7 @@ class BackendFoundationTests(TestCase):
                 supplier_invoice_number=second_invoice.supplier_invoice_number,
                 total_amount=Decimal("500.00"),
                 matched_amount=Decimal("500.00"),
+                currency="USD",
                 status=BillingConfirmationStatus.GENERATED,
             )
 
@@ -281,6 +290,7 @@ class WorkflowServiceTests(BackendFoundationTests):
             "route_to": "CAI",
             "departure_date": date(2026, 7, 5),
             "amount": amount,
+            "currency": "USD",
             "supplier": self.supplier,
         }
 
@@ -291,6 +301,7 @@ class WorkflowServiceTests(BackendFoundationTests):
             route_from="TIP",
             route_to="IST",
             invoiced_amount=invoiced_amount,
+            currency=self.invoice.currency,
             account_type=AccountType.COMPANY,
         )
 
@@ -368,6 +379,7 @@ class WorkflowServiceTests(BackendFoundationTests):
                 "supplier_invoice_number": "INV-AFR-6000",
                 "invoice_date": date(2026, 8, 1),
                 "received_date": date(2026, 8, 2),
+                "currency": "USD",
                 "total_amount": Decimal("500.00"),
             },
             self.user,
@@ -383,6 +395,7 @@ class WorkflowServiceTests(BackendFoundationTests):
                     "supplier_invoice_number": self.invoice.supplier_invoice_number,
                     "invoice_date": date(2026, 8, 1),
                     "received_date": date(2026, 8, 2),
+                    "currency": "USD",
                     "total_amount": Decimal("500.00"),
                 },
                 self.user,
