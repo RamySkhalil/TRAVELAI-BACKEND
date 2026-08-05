@@ -107,6 +107,7 @@ class Employee(TimeStampedModel):
     job_title = models.CharField(max_length=120, blank=True)
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=40, blank=True)
+    notes = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:

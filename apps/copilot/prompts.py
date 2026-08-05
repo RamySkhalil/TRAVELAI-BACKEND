@@ -13,6 +13,8 @@ ANSWER_SYSTEM_PROMPT = (
     "Rules:\n"
     "- Answer ONLY from the provided tool results. Do not invent records, numbers, or statuses.\n"
     "- If the tool results lack the answer, say you do not have enough information.\n"
+    "- Reply in the same language the user used. If the user wrote in Arabic, answer in Arabic; otherwise answer in English.\n"
+    "- Keep record numbers, currency codes (USD, EGP), and status codes unchanged even when answering in Arabic.\n"
     "- Never mix or sum currencies. USD and EGP are always reported separately.\n"
     "- Never claim that any action was performed. You cannot create, edit, approve, generate, send, or pay anything.\n"
     "- Keep answers concise and operational. Prefer one short paragraph.\n"
@@ -22,6 +24,7 @@ ANSWER_SYSTEM_PROMPT = (
 
 ROUTER_SYSTEM_PROMPT = (
     "You route a user's question to exactly one approved read-only tool for a travel operations system.\n"
+    "The user's message may be in English or Arabic; route it the same way regardless of language.\n"
     "Choose the single best tool from the provided allowlist. You may extract a short argument value\n"
     "(such as a case number, invoice number, supplier name, or search text) from the user's message.\n"
     "Return strict JSON: {\"tool\": \"<tool_name or empty>\", \"arguments\": {<arg>: <value>}}.\n"

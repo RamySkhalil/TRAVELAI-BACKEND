@@ -1,5 +1,9 @@
+from django.db.models import Count
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
+from apps.audit_logs.services import create_audit_log
 from apps.common.permissions import IsAdminOrReadOnly
 
 from .filters import CountryFilter, DepartmentFilter, EmployeeFilter, ProjectFilter, RouteFilter, SupplierFilter
@@ -53,11 +57,82 @@ class RouteViewSet(viewsets.ModelViewSet):
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
-    queryset = Employee.objects.select_related("project", "department").all()
+    queryset = Employee.objects.select_related("project", "project__country", "department").annotate(travel_case_count=Count("travel_cases"))
     serializer_class = EmployeeSerializer
     permission_classes = [IsAdminOrReadOnly]
     filterset_class = EmployeeFilter
     search_fields = ["badge_number", "full_name", "email", "phone"]
-    ordering_fields = ["badge_number", "full_name", "created_at"]
+    ordering_fields = ["badge_number", "full_name", "created_at", "updated_at"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    def perform_create(self, serializer):
+        employee = serializer.save()
+        create_audit_log(
+            user=self.request.user,
+            action="Employee Created",
+            entity_type="Employee",
+            entity_id=employee.id,
+            new_value=_employee_audit_value(employee),
+        )
+
+    def perform_update(self, serializer):
+        old_value = _employee_audit_value(self.get_object())
+        employee = serializer.save()
+        create_audit_log(
+            user=self.request.user,
+            action="Employee Updated",
+            entity_type="Employee",
+            entity_id=employee.id,
+            old_value=old_value,
+            new_value=_employee_audit_value(employee),
+        )
+
+    @action(detail=True, methods=["post"])
+    def activate(self, request, pk=None):
+        employee = self.get_object()
+        old_value = _employee_audit_value(employee)
+        if not employee.is_active:
+            employee.is_active = True
+            employee.save(update_fields=["is_active", "updated_at"])
+        create_audit_log(
+            user=request.user,
+            action="Employee Activated",
+            entity_type="Employee",
+            entity_id=employee.id,
+            old_value=old_value,
+            new_value=_employee_audit_value(employee),
+        )
+        return Response(self.get_serializer(employee).data)
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        employee = self.get_object()
+        old_value = _employee_audit_value(employee)
+        if employee.is_active:
+            employee.is_active = False
+            employee.save(update_fields=["is_active", "updated_at"])
+        create_audit_log(
+            user=request.user,
+            action="Employee Deactivated",
+            entity_type="Employee",
+            entity_id=employee.id,
+            old_value=old_value,
+            new_value=_employee_audit_value(employee),
+        )
+        return Response(self.get_serializer(employee).data)
+
+
+def _employee_audit_value(employee: Employee) -> dict:
+    return {
+        "badge_number": employee.badge_number,
+        "full_name": employee.full_name,
+        "project": employee.project_id,
+        "department": employee.department_id,
+        "job_title": employee.job_title,
+        "email": employee.email,
+        "phone": employee.phone,
+        "notes": employee.notes,
+        "is_active": employee.is_active,
+    }
 
 # Create your views here.

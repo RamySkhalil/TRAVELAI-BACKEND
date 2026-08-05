@@ -16,6 +16,7 @@ from .services import (
     create_ticket_version_from_confirmed_extraction,
     lock_ticket_version,
     mark_ticket_cancelled,
+    mark_ticket_not_billable,
 )
 
 
@@ -24,7 +25,7 @@ class TicketVersionPermission(RoleBasedOperationalPermission):
 
 
 class TicketVersionViewSet(viewsets.ModelViewSet):
-    queryset = TicketVersion.objects.select_related("travel_case", "supplier").all()
+    queryset = TicketVersion.objects.select_related("travel_case", "supplier", "confirmed_by").all()
     serializer_class = TicketVersionSerializer
     permission_classes = [TicketVersionPermission]
     filterset_class = TicketVersionFilter
@@ -65,6 +66,11 @@ class TicketVersionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="mark-cancelled")
     def mark_cancelled(self, request, pk=None):
         ticket_version = mark_ticket_cancelled(self.get_object(), request.data.get("reason", ""), request.user)
+        return Response(self.get_serializer(ticket_version).data)
+
+    @action(detail=True, methods=["post"], url_path="mark-not-billable")
+    def mark_not_billable(self, request, pk=None):
+        ticket_version = mark_ticket_not_billable(self.get_object(), request.data.get("reason", ""), request.user)
         return Response(self.get_serializer(ticket_version).data)
 
     @action(detail=True, methods=["post"])

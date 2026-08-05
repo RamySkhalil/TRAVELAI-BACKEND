@@ -12,4 +12,5 @@ class TicketVersionFilter(django_filters.FilterSet):
             "ticket_action",
             "supplier",
             "departure_date",
+            "billing_state",
         ]

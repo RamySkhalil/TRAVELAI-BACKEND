@@ -32,7 +32,7 @@ def get_my_pending_actions(user, **_) -> dict:
 
 
 def get_dashboard_summary(user, **_) -> dict:
-    summary = dashboard_summary()
+    summary = dashboard_summary(user)
     travel = summary["travel"]
     invoices = summary["supplier_invoices"]
     finance = summary["tbcn_finance"]

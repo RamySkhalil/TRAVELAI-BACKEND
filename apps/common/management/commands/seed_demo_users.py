@@ -5,11 +5,12 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 
-GROUP_NAMES = ("Admin", "HR", "BookingOfficer", "BookingManager", "Finance", "Auditor")
+GROUP_NAMES = ("SuperAdmin", "Admin", "HR", "BookingOfficer", "BookingManager", "Finance", "Auditor")
 DEMO_PASSWORD = "TravelOpsDemo123!"
 
 DEMO_USERS = (
-    {"username": "admin_demo", "groups": ("Admin",), "is_staff": True, "is_superuser": True, "first_name": "Admin"},
+    {"username": "superadmin_demo", "groups": ("SuperAdmin",), "is_staff": True, "is_superuser": True, "first_name": "Super Admin", "is_super_admin": True},
+    {"username": "admin_demo", "groups": ("Admin",), "is_staff": True, "first_name": "Admin"},
     {"username": "hr_demo", "groups": ("HR",), "first_name": "HR"},
     {"username": "booking_demo", "groups": ("BookingOfficer",), "first_name": "Booking"},
     {"username": "booking_manager_demo", "groups": ("BookingManager",), "first_name": "Booking Manager"},
@@ -26,6 +27,8 @@ class Command(BaseCommand):
             raise CommandError("Refusing to seed demo users when DJANGO_DEBUG is not True.")
 
         user_model = get_user_model()
+
+        from apps.access_control.models import TravelOpsUserProfile
 
         with transaction.atomic():
             Group.objects.bulk_create([Group(name=name) for name in GROUP_NAMES], ignore_conflicts=True)
@@ -57,6 +60,15 @@ class Command(BaseCommand):
                         user.save(update_fields=update_fields)
 
                 user.groups.set(groups[name] for name in user_config["groups"])
+
+                TravelOpsUserProfile.objects.update_or_create(
+                    user=user,
+                    defaults={
+                        "display_name": f"{user_config.get('first_name', username)} Demo".strip(),
+                        "is_super_admin": user_config.get("is_super_admin", False),
+                        "is_travelops_active": True,
+                    },
+                )
 
         self.stdout.write(self.style.WARNING("DEVELOPMENT ONLY: demo users use a shared local password."))
         self.stdout.write(self.style.WARNING("Do not use these credentials outside local development."))

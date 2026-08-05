@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from .base import BaseExtractionProvider, normalize_invoice_result, normalize_ticket_result
+from .base import BaseExtractionProvider, document_text, normalize_invoice_result, normalize_ticket_result
 
 
 class MockExtractionProvider(BaseExtractionProvider):
     name = "mock"
 
     def classify_document(self, file_or_text):
-        text = str(file_or_text or "").lower()
+        text = document_text(file_or_text).lower()
         if "invoice" in text:
             return {"document_type": "SUPPLIER_INVOICE", "confidence": 0.95}
         return {"document_type": "FLIGHT_TICKET", "confidence": 0.95}
 
     def extract_ticket(self, file_or_text):
-        text = str(file_or_text or "")
+        text = document_text(file_or_text)
         if "missing critical" in text.lower():
             return normalize_ticket_result(
                 {
@@ -64,7 +64,7 @@ class MockExtractionProvider(BaseExtractionProvider):
         )
 
     def extract_invoice(self, file_or_text):
-        text = str(file_or_text or "")
+        text = document_text(file_or_text)
         currency = _currency_from_text(text) or "USD"
         if "missing currency" in text.lower():
             currency = ""

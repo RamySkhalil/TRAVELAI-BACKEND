@@ -46,6 +46,18 @@ class Command(BaseCommand):
         else:
             self._line("Secret key is non-default", not report["secret_key_is_default"])
 
+        if not report["debug"]:
+            self.stdout.write("")
+            self.stdout.write(self.style.MIGRATE_HEADING("Production security flags (advisory)"))
+            self._line("SECURE_SSL_REDIRECT enabled", report["ssl_redirect_enabled"], warn_when=not report["ssl_redirect_enabled"])
+            self._line("SESSION_COOKIE_SECURE enabled", report["session_cookie_secure"], warn_when=not report["session_cookie_secure"])
+            self._line("CSRF_COOKIE_SECURE enabled", report["csrf_cookie_secure"], warn_when=not report["csrf_cookie_secure"])
+            self._line("HSTS enabled", report["hsts_seconds"] > 0, warn_when=report["hsts_seconds"] == 0)
+            self._line(
+                "CSRF_TRUSTED_ORIGINS configured",
+                report["csrf_trusted_origins_count"] > 0,
+            )
+
         self.stdout.write("")
         blocking_issues = self._blocking_issues(report)
         if blocking_issues:

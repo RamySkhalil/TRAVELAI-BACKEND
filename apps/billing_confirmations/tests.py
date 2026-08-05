@@ -16,7 +16,7 @@ from apps.master_data.models import Country, Department, Employee, Project, Supp
 from apps.supplier_invoices.models import MatchStatus, SupplierInvoice, SupplierInvoiceLine, SupplierInvoiceStatus
 from apps.supplier_invoices.services import is_supplier_invoice_finance_ready
 from apps.ticket_versions.models import TicketAction, TicketVersion
-from apps.travel_cases.models import AccountType, TravelCase, TravelPurpose
+from apps.travel_cases.models import AccountType, TravelCase, TravelCaseStatus, TravelPurpose
 from config.settings import CLOUDFLARE_R2_REQUIRED_ENV_NAMES, r2_storage_enabled
 
 
@@ -172,6 +172,19 @@ class TravelBillingConfirmationPhase11Tests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], BillingConfirmationStatus.PAID)
         self.assertEqual(response.data["finance_status"], FinanceStatus.PAID)
+
+    def test_finance_flow_advances_linked_travel_case(self):
+        tbcn = self._generate_tbcn()
+
+        self.client.post(f"/api/v1/tbcn/{tbcn.id}/send-to-finance/", {}, format="json")
+        self.travel_case.refresh_from_db()
+        self.assertEqual(self.travel_case.current_status, TravelCaseStatus.SENT_TO_FINANCE)
+
+        self.client.post(f"/api/v1/tbcn/{tbcn.id}/mark-finance-accepted/", {}, format="json")
+        self.client.post(f"/api/v1/tbcn/{tbcn.id}/mark-paid/", {}, format="json")
+        self.travel_case.refresh_from_db()
+        self.assertEqual(self.travel_case.current_status, TravelCaseStatus.PAID)
+        self.assertTrue(AuditLog.objects.filter(action="Travel Case Paid", entity_id=self.travel_case.id).exists())
 
     def test_cannot_mark_paid_without_sent_and_accepted_tbcn(self):
         tbcn = self._generate_tbcn()

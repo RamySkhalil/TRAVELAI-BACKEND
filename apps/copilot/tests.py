@@ -183,6 +183,37 @@ class CopilotPhase17ATests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn(invoice.invoice_record_number, response.data["answer"])
 
+    def test_arabic_pending_actions_routes_and_localizes(self):
+        self.client.force_authenticate(self.booking_user)
+        response = self.client.post(CHAT_URL, {"message": "ما الذي يحتاج انتباهي اليوم؟"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Safety notice and suggestions come back in Arabic.
+        self.assertEqual(response.data["safety_notice"], "إجابة للقراءة فقط. لم يتم تغيير أي سجلات.")
+        self.assertTrue(any("\u0600" <= ch <= "\u06FF" for ch in " ".join(response.data["suggested_questions"])))
+        # Booking-relevant pending travel case still surfaces.
+        self.assertTrue(any(card["type"] == "TRAVEL_CASE" for card in response.data["cards"]))
+
+    def test_arabic_unpaid_tbcn_groups_by_currency(self):
+        self._create_unpaid_tbcn(1, Decimal("100.00"), "USD", "TBCN-LY-2026-000101")
+        self._create_unpaid_tbcn(2, Decimal("18500.00"), "EGP", "TBCN-EG-2026-000102")
+        self.client.force_authenticate(self.finance_user)
+        response = self.client.post(CHAT_URL, {"message": "أي إشعارات TBCN غير مدفوعة حسب العملة؟"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subtitles = {card["subtitle"] for card in response.data["cards"]}
+        self.assertIn("USD 100.00", subtitles)
+        self.assertIn("EGP 18,500.00", subtitles)
+
+    def test_arabic_action_request_is_refused_in_arabic(self):
+        self.client.force_authenticate(self.hr_user)
+        response = self.client.post(
+            CHAT_URL,
+            {"message": "أنشئ TBCN للفاتورة SIR-LY-2026-000001", "context": {"screen": "invoiceMatching"}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("للقراءة فقط", response.data["answer"])
+        self.assertTrue(response.data["cards"][0]["url"])
+
     def test_permit_status_flags(self):
         Permit.objects.create(travel_case=self.travel_case, permit_type=PermitType.LIBYA_PERMIT, status=PermitStatus.PENDING)
         self.client.force_authenticate(self.hr_user)

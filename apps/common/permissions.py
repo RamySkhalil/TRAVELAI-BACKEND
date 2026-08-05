@@ -1,6 +1,9 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 
+SUPER_ADMIN_GROUP = "SuperAdmin"
+
+
 class IsReadOnly(BasePermission):
     def has_permission(self, request, view):
         return request.method in SAFE_METHODS
@@ -14,6 +17,8 @@ class IsGroupMember(BasePermission):
         if not user or not user.is_authenticated:
             return False
         if user.is_superuser or user.is_staff:
+            return True
+        if user.groups.filter(name=SUPER_ADMIN_GROUP).exists():
             return True
         return user.groups.filter(name=self.group_name).exists()
 
@@ -58,6 +63,8 @@ class CanViewAuditLogs(BasePermission):
             return False
         if user.is_superuser or user.is_staff:
             return True
+        if user.groups.filter(name=SUPER_ADMIN_GROUP).exists():
+            return True
         return user.groups.filter(name__in=["Admin", "Auditor"]).exists()
 
 
@@ -73,5 +80,7 @@ class RoleBasedOperationalPermission(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         if user.is_superuser or user.is_staff:
+            return True
+        if user.groups.filter(name=SUPER_ADMIN_GROUP).exists():
             return True
         return user.groups.filter(name__in=self.write_groups).exists()

@@ -10,7 +10,7 @@ SUPPLIER_LIMIT = 10
 
 
 def get_unpaid_tbcn_by_currency(user, **_) -> dict:
-    summary = dashboard_summary()
+    summary = dashboard_summary(user)
     rows = summary["tbcn_finance"]["unpaid_by_currency"]
     if not rows:
         return tool_result("get_unpaid_tbcn_by_currency", "There are no unpaid TBCN finance items.")
@@ -35,7 +35,7 @@ def get_unpaid_tbcn_by_currency(user, **_) -> dict:
 
 
 def get_cost_by_supplier(user, **_) -> dict:
-    results = dashboard_cost_by_supplier()["results"][:SUPPLIER_LIMIT]
+    results = dashboard_cost_by_supplier(user)["results"][:SUPPLIER_LIMIT]
     if not results:
         return tool_result("get_cost_by_supplier", "There is no supplier cost data yet.")
 

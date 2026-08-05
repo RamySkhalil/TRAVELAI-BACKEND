@@ -30,7 +30,7 @@ from apps.billing_confirmations.views import (
     TravelBillingConfirmationNoteViewSet,
     TravelBillingConfirmationRevisionViewSet,
 )
-from apps.common.views import current_user, health, readiness
+from apps.common.views import admin_settings_summary, current_user, health, readiness
 from apps.copilot.views import CopilotChatView
 from apps.dashboard.views import DashboardViewSet
 from apps.invoice_matching.views import InvoiceMatchingViewSet
@@ -71,8 +71,10 @@ urlpatterns = [
     path('api/v1/auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/v1/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/v1/auth/me/', current_user, name='current_user'),
+    path('api/v1/admin-settings/summary/', admin_settings_summary, name='admin_settings_summary'),
     path('api/v1/copilot/chat/', CopilotChatView.as_view(), name='copilot-chat'),
     path('api/v1/finance-control-report/', FinanceControlReportView.as_view(), name='finance-control-report'),
     path('api/v1/finance-control-report/export-csv/', FinanceControlReportCsvExportView.as_view(), name='finance-control-report-export-csv'),
+    path('api/v1/access-control/', include('apps.access_control.urls')),
     path('api/v1/', include(router.urls)),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

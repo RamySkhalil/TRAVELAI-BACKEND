@@ -63,6 +63,7 @@ def collect_environment_report(env=os.environ, *, check_database: bool = True) -
     openai_missing = openai_missing_env_names(env)
     allowed_hosts = [host for host in settings.ALLOWED_HOSTS if host]
     cors_origins = [origin for origin in getattr(settings, "CORS_ALLOWED_ORIGINS", []) if origin]
+    csrf_origins = [origin for origin in getattr(settings, "CSRF_TRUSTED_ORIGINS", []) if origin]
 
     report = {
         "debug": bool(settings.DEBUG),
@@ -74,7 +75,12 @@ def collect_environment_report(env=os.environ, *, check_database: bool = True) -
         "allowed_hosts_count": len(allowed_hosts),
         "cors_configured": bool(cors_origins),
         "cors_origin_count": len(cors_origins),
+        "csrf_trusted_origins_count": len(csrf_origins),
         "secret_key_is_default": secret_key_is_default(),
+        "ssl_redirect_enabled": bool(getattr(settings, "SECURE_SSL_REDIRECT", False)),
+        "session_cookie_secure": bool(getattr(settings, "SESSION_COOKIE_SECURE", False)),
+        "csrf_cookie_secure": bool(getattr(settings, "CSRF_COOKIE_SECURE", False)),
+        "hsts_seconds": int(getattr(settings, "SECURE_HSTS_SECONDS", 0)),
     }
     if check_database:
         report["database_connected"] = check_database_connection()

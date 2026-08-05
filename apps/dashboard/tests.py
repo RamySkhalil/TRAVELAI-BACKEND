@@ -9,10 +9,11 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.billing_confirmations.models import BillingConfirmationStatus, FinanceStatus, TravelBillingConfirmationNote
+from apps.dashboard.services import TICKET_INVOICE_FOLLOW_UP_DAYS
 from apps.master_data.models import Country, Department, Employee, Project, Supplier
 from apps.permits.models import Permit, PermitStatus, PermitType
 from apps.supplier_invoices.models import MatchStatus, SupplierInvoice, SupplierInvoiceLine, SupplierInvoiceStatus
-from apps.ticket_versions.models import TicketAction, TicketVersion
+from apps.ticket_versions.models import TicketAction, TicketBillingState, TicketVersion
 from apps.travel_cases.models import AccountType, TravelCase, TravelCaseStatus, TravelPurpose
 
 
@@ -179,6 +180,48 @@ class DashboardPhase13Tests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(any(item["type"] == "PERMIT" for item in response.data["items"]))
 
+    def test_summary_counts_tickets_awaiting_a_supplier_invoice(self):
+        self._mark_awaiting_invoice(self.ticket_version, days_ago=1)
+
+        response = self.client.get("/api/v1/dashboard/summary/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["tickets"]["awaiting_invoice"], 1)
+        self.assertEqual(response.data["tickets"]["awaiting_invoice_overdue"], 0)
+        amounts = {row["currency"]: row["amount"] for row in response.data["tickets"]["unbilled_by_currency"]}
+        self.assertEqual(amounts["USD"], Decimal("450.00"))
+
+    def test_unbilled_tickets_report_groups_by_supplier(self):
+        self._mark_awaiting_invoice(self.ticket_version, days_ago=TICKET_INVOICE_FOLLOW_UP_DAYS + 5)
+
+        response = self.client.get("/api/v1/dashboard/unbilled-tickets/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row = response.data["results"][0]
+        self.assertEqual(row["supplier_code"], self.supplier.code)
+        self.assertEqual(row["ticket_count"], 1)
+        self.assertEqual(row["total_amount"], Decimal("450.00"))
+        self.assertEqual(row["overdue_count"], 1)
+        self.assertGreaterEqual(row["oldest_age_days"], TICKET_INVOICE_FOLLOW_UP_DAYS)
+
+    def test_overdue_unbilled_ticket_appears_in_the_booking_queue(self):
+        self._mark_awaiting_invoice(self.ticket_version, days_ago=TICKET_INVOICE_FOLLOW_UP_DAYS + 1)
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.get("/api/v1/dashboard/pending-actions/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(item["type"] == "TICKET_AWAITING_INVOICE" for item in response.data["items"]))
+
+    def test_recently_booked_ticket_stays_out_of_the_queue(self):
+        self._mark_awaiting_invoice(self.ticket_version, days_ago=1)
+        self.client.force_authenticate(self.booking_user)
+
+        response = self.client.get("/api/v1/dashboard/pending-actions/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(any(item["type"] == "TICKET_AWAITING_INVOICE" for item in response.data["items"]))
+
     def test_dashboard_endpoints_require_authentication(self):
         self.client.force_authenticate(user=None)
 
@@ -190,6 +233,7 @@ class DashboardPhase13Tests(TestCase):
             "/api/v1/dashboard/cost-by-supplier/",
             "/api/v1/dashboard/cost-by-route/",
             "/api/v1/dashboard/supplier-aging/",
+            "/api/v1/dashboard/unbilled-tickets/",
             "/api/v1/dashboard/pending-actions/",
         ]:
             with self.subTest(endpoint=endpoint):
@@ -201,6 +245,12 @@ class DashboardPhase13Tests(TestCase):
         group, _ = Group.objects.get_or_create(name=group_name)
         user.groups.add(group)
         return user
+
+    def _mark_awaiting_invoice(self, ticket, days_ago):
+        ticket.billing_state = TicketBillingState.AWAITING_INVOICE
+        ticket.billing_state_changed_at = timezone.now() - timedelta(days=days_ago)
+        ticket.save(update_fields=["billing_state", "billing_state_changed_at"])
+        return ticket
 
     def _create_travel_case(self, case_number, project, status_value):
         return TravelCase.objects.create(

@@ -21,6 +21,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 
+def _env_bool(name: str, default: str = "False") -> bool:
+    """Read a boolean-style environment flag using the project's "True"/"False" convention."""
+    return os.getenv(name, default) == "True"
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -58,6 +63,7 @@ INSTALLED_APPS = [
     'apps.dashboard',
     'apps.ai_extraction',
     'apps.copilot',
+    'apps.access_control',
     'apps.common',
 ]
 
@@ -205,10 +211,40 @@ if CLOUDFLARE_R2_ENABLED:
         "BACKEND": "storages.backends.s3.S3Storage",
     }
 
-CORS_ALLOWED_ORIGINS = os.getenv(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000",
-).split(",")
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
+# Origins allowed to send cross-site POST/PUT/PATCH/DELETE with a CSRF token.
+# Required when serving the Django admin/session-authenticated views over HTTPS
+# behind a different origin. JWT API calls are not affected. Provide full scheme
+# origins, e.g. "https://app.example.com". No production domains are hard-coded.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+# Security hardening. Defaults are safe for local HTTP development and must be
+# enabled via environment variables in production behind HTTPS. Do not hard-code
+# production domains or force HTTPS locally.
+SECURE_SSL_REDIRECT = _env_bool("DJANGO_SECURE_SSL_REDIRECT")
+SESSION_COOKIE_SECURE = _env_bool("DJANGO_SESSION_COOKIE_SECURE")
+CSRF_COOKIE_SECURE = _env_bool("DJANGO_CSRF_COOKIE_SECURE")
+SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", "True")
+SECURE_HSTS_PRELOAD = _env_bool("DJANGO_SECURE_HSTS_PRELOAD", "True")
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# When deployed behind a TLS-terminating reverse proxy / load balancer, trust the
+# forwarded protocol header so Django correctly detects HTTPS requests.
+if _env_bool("DJANGO_SECURE_PROXY_SSL_HEADER"):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -234,8 +270,14 @@ SPECTACULAR_SETTINGS = {
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+# Document extraction uses a stronger vision-capable model that can read PDFs and
+# scanned images directly via the OpenAI Responses API (no separate OCR step).
+OPENAI_EXTRACTION_MODEL = os.getenv("OPENAI_EXTRACTION_MODEL", "gpt-5")
 OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "30"))
+# Extraction with vision/reasoning models is slower than plain chat, so it gets a
+# longer timeout that can be tuned independently.
+OPENAI_EXTRACTION_TIMEOUT_SECONDS = int(os.getenv("OPENAI_EXTRACTION_TIMEOUT_SECONDS", "90"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

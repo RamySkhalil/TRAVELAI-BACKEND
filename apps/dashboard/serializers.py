@@ -14,12 +14,20 @@ class DashboardTravelSummarySerializer(serializers.Serializer):
     cancelled = serializers.IntegerField()
 
 
+class DashboardCurrencyAmountSerializer(serializers.Serializer):
+    currency = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
 class DashboardTicketSummarySerializer(serializers.Serializer):
     total = serializers.IntegerField()
     active = serializers.IntegerField()
     cancelled = serializers.IntegerField()
     changed_reissued = serializers.IntegerField()
     no_show = serializers.IntegerField()
+    awaiting_invoice = serializers.IntegerField()
+    awaiting_invoice_overdue = serializers.IntegerField()
+    unbilled_by_currency = DashboardCurrencyAmountSerializer(many=True)
 
 
 class DashboardPermitSummarySerializer(serializers.Serializer):
@@ -36,11 +44,6 @@ class DashboardSupplierInvoiceSummarySerializer(serializers.Serializer):
     exception_found = serializers.IntegerField()
     hr_approved = serializers.IntegerField()
     tbcn_generated = serializers.IntegerField()
-
-
-class DashboardCurrencyAmountSerializer(serializers.Serializer):
-    currency = serializers.CharField()
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2)
 
 
 class DashboardTbcnFinanceSummarySerializer(serializers.Serializer):
@@ -128,6 +131,23 @@ class CostByRouteResponseSerializer(serializers.Serializer):
 
 class DashboardResultsSerializer(serializers.Serializer):
     results = serializers.ListField(child=serializers.DictField())
+
+
+class UnbilledTicketsBySupplierSerializer(serializers.Serializer):
+    supplier_id = serializers.IntegerField()
+    supplier_code = serializers.CharField()
+    supplier_name = serializers.CharField()
+    currency = serializers.CharField()
+    ticket_count = serializers.IntegerField()
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=2)
+    overdue_count = serializers.IntegerField()
+    oldest_age_days = serializers.IntegerField()
+    share_percent = serializers.DecimalField(max_digits=5, decimal_places=2)
+
+
+class UnbilledTicketsResponseSerializer(serializers.Serializer):
+    results = UnbilledTicketsBySupplierSerializer(many=True)
+    follow_up_days = serializers.IntegerField()
 
 
 class SupplierAgingSerializer(serializers.Serializer):

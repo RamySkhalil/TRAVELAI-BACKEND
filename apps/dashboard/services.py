@@ -2,19 +2,24 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Min, Q, Sum
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
+from apps.access_control.permissions import apply_scope_filter
 from apps.ai_extraction.models import DocumentExtractionJob, DocumentType, ExtractionStatus
 from apps.billing_confirmations.models import BillingConfirmationStatus, FinanceStatus, TravelBillingConfirmationNote
 from apps.permits.models import Permit, PermitStatus, PermitType
 from apps.supplier_invoices.models import MatchStatus, SupplierInvoice, SupplierInvoiceLine, SupplierInvoiceStatus
-from apps.ticket_versions.models import TicketAction, TicketStatus, TicketVersion
+from apps.ticket_versions.models import TicketAction, TicketBillingState, TicketStatus, TicketVersion
 from apps.travel_cases.models import TravelCase, TravelCaseStatus
 
 
 ZERO = Decimal("0.00")
+
+# Suppliers normally invoice one to two weeks after ticket activity, so a ticket
+# still awaiting its invoice past this point is worth chasing.
+TICKET_INVOICE_FOLLOW_UP_DAYS = 10
 
 AGING_BUCKETS = [
     ("0_7", "0 to 7 days", 0, 7),
@@ -35,6 +40,7 @@ PENDING_GROUPS = {
     "assigned_cases": ("Travel cases assigned to you", "blue"),
     "ticket_extractions": ("Ticket extractions needing confirmation", "violet"),
     "invoice_extractions": ("Supplier invoice extractions needing confirmation", "violet"),
+    "tickets_awaiting_invoice": ("Booked tickets awaiting a supplier invoice", "amber"),
     "invoice_exceptions": ("Invoice lines with exceptions", "red"),
     "hr_approval": ("Supplier invoices awaiting HR approval", "amber"),
     "tbcn_ready": ("HR-approved invoices ready for TBCN", "teal"),
@@ -45,25 +51,30 @@ PENDING_GROUPS = {
 }
 
 
-def dashboard_summary():
+def dashboard_summary(user=None):
     today = timezone.localdate()
     expiring_soon = today + timedelta(days=14)
+    travel_cases = _scoped_travel_cases(user)
+    supplier_invoices = _scoped_supplier_invoices(user)
+    tbcn_notes = _scoped_tbcn(user)
+    permits = _scoped_permits(user)
 
     unpaid_by_currency = _amounts_by_currency(
-        TravelBillingConfirmationNote.objects.exclude(finance_status=FinanceStatus.PAID).exclude(
+        tbcn_notes.exclude(finance_status=FinanceStatus.PAID).exclude(
             status__in=[BillingConfirmationStatus.CANCELLED, BillingConfirmationStatus.REVISED]
         )
     )
-    paid_by_currency = _amounts_by_currency(TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.PAID))
+    paid_by_currency = _amounts_by_currency(tbcn_notes.filter(finance_status=FinanceStatus.PAID))
+    awaiting_invoice = _tickets_awaiting_invoice(user)
 
     return {
         "travel": {
-            "total": TravelCase.objects.count(),
-            "draft": TravelCase.objects.filter(current_status=TravelCaseStatus.DRAFT).count(),
-            "submitted": TravelCase.objects.filter(current_status=TravelCaseStatus.SUBMITTED_BY_HR).count(),
-            "under_booking": TravelCase.objects.filter(current_status=TravelCaseStatus.UNDER_BOOKING).count(),
-            "closed": TravelCase.objects.filter(current_status=TravelCaseStatus.CLOSED).count(),
-            "cancelled": TravelCase.objects.filter(current_status=TravelCaseStatus.CANCELLED).count(),
+            "total": travel_cases.count(),
+            "draft": travel_cases.filter(current_status=TravelCaseStatus.DRAFT).count(),
+            "submitted": travel_cases.filter(current_status=TravelCaseStatus.SUBMITTED_BY_HR).count(),
+            "under_booking": travel_cases.filter(current_status=TravelCaseStatus.UNDER_BOOKING).count(),
+            "closed": travel_cases.filter(current_status=TravelCaseStatus.CLOSED).count(),
+            "cancelled": travel_cases.filter(current_status=TravelCaseStatus.CANCELLED).count(),
         },
         "tickets": {
             "total": TicketVersion.objects.count(),
@@ -71,42 +82,48 @@ def dashboard_summary():
             "cancelled": TicketVersion.objects.filter(ticket_status=TicketStatus.CANCELLED).count(),
             "changed_reissued": TicketVersion.objects.filter(ticket_action__in=[TicketAction.DATE_CHANGE, TicketAction.REISSUE]).count(),
             "no_show": TicketVersion.objects.filter(Q(ticket_status=TicketStatus.NO_SHOW) | Q(ticket_action=TicketAction.NO_SHOW)).count(),
+            "awaiting_invoice": awaiting_invoice.count(),
+            "awaiting_invoice_overdue": _overdue_awaiting_invoice(awaiting_invoice).count(),
+            "unbilled_by_currency": _ticket_amounts_by_currency(awaiting_invoice),
         },
         "permits": {
-            "pending_egypt": Permit.objects.filter(permit_type=PermitType.EGYPT_PERMIT, status=PermitStatus.PENDING).count(),
-            "pending_libya": Permit.objects.filter(permit_type=PermitType.LIBYA_PERMIT, status=PermitStatus.PENDING).count(),
-            "expired": Permit.objects.filter(Q(status=PermitStatus.EXPIRED) | Q(expiry_date__lt=today)).count(),
-            "expiring_soon": Permit.objects.filter(
+            "pending_egypt": permits.filter(permit_type=PermitType.EGYPT_PERMIT, status=PermitStatus.PENDING).count(),
+            "pending_libya": permits.filter(permit_type=PermitType.LIBYA_PERMIT, status=PermitStatus.PENDING).count(),
+            "expired": permits.filter(Q(status=PermitStatus.EXPIRED) | Q(expiry_date__lt=today)).count(),
+            "expiring_soon": permits.filter(
                 status=PermitStatus.APPROVED,
                 expiry_date__gte=today,
                 expiry_date__lte=expiring_soon,
             ).count(),
         },
         "supplier_invoices": {
-            "total": SupplierInvoice.objects.count(),
-            "awaiting_matching": SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.AWAITING_MATCHING).count(),
-            "matched": SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.MATCHED).count(),
-            "exception_found": SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.EXCEPTION_FOUND).count(),
-            "hr_approved": SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.HR_APPROVED).count(),
-            "tbcn_generated": SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.TBCN_GENERATED).count(),
+            "total": supplier_invoices.count(),
+            "awaiting_matching": supplier_invoices.filter(status=SupplierInvoiceStatus.AWAITING_MATCHING).count(),
+            "matched": supplier_invoices.filter(status=SupplierInvoiceStatus.MATCHED).count(),
+            "exception_found": supplier_invoices.filter(status=SupplierInvoiceStatus.EXCEPTION_FOUND).count(),
+            "hr_approved": supplier_invoices.filter(status=SupplierInvoiceStatus.HR_APPROVED).count(),
+            "tbcn_generated": supplier_invoices.filter(status=SupplierInvoiceStatus.TBCN_GENERATED).count(),
         },
         "tbcn_finance": {
-            "total": TravelBillingConfirmationNote.objects.count(),
-            "generated_not_sent": TravelBillingConfirmationNote.objects.filter(
+            "total": tbcn_notes.count(),
+            "generated_not_sent": tbcn_notes.filter(
                 status=BillingConfirmationStatus.GENERATED,
                 finance_status=FinanceStatus.NOT_SENT,
             ).count(),
-            "sent_to_finance": TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.SENT).count(),
-            "finance_accepted": TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.ACCEPTED).count(),
-            "paid": TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.PAID).count(),
+            "sent_to_finance": tbcn_notes.filter(finance_status=FinanceStatus.SENT).count(),
+            "finance_accepted": tbcn_notes.filter(finance_status=FinanceStatus.ACCEPTED).count(),
+            "paid": tbcn_notes.filter(finance_status=FinanceStatus.PAID).count(),
             "unpaid_by_currency": unpaid_by_currency,
             "paid_by_currency": paid_by_currency,
         },
     }
 
 
-def operational_kpis():
-    summary = dashboard_summary()
+def operational_kpis(user=None):
+    summary = dashboard_summary(user)
+    travel_cases = _scoped_travel_cases(user)
+    supplier_invoices = _scoped_supplier_invoices(user)
+    invoice_lines = _scoped_invoice_lines(user)
     unpaid_amount_kpis = [
         {
             "key": f"unpaid_finance_amount_{row['currency'].lower()}",
@@ -118,12 +135,23 @@ def operational_kpis():
         }
         for row in summary["tbcn_finance"]["unpaid_by_currency"]
     ]
+    unbilled_amount_kpis = [
+        {
+            "key": f"unbilled_ticket_amount_{row['currency'].lower()}",
+            "label": f"Booked, not yet invoiced ({row['currency']})",
+            "value": row["amount"],
+            "unit": "amount",
+            "currency": row["currency"],
+            "tone": "amber",
+        }
+        for row in summary["tickets"]["unbilled_by_currency"]
+    ]
     return {
         "results": [
             {
                 "key": "open_travel_cases",
                 "label": "Open travel cases",
-                "value": TravelCase.objects.exclude(current_status__in=[TravelCaseStatus.CLOSED, TravelCaseStatus.CANCELLED]).count(),
+                "value": travel_cases.exclude(current_status__in=[TravelCaseStatus.CLOSED, TravelCaseStatus.CANCELLED]).count(),
                 "unit": "cases",
                 "tone": "blue",
             },
@@ -137,7 +165,7 @@ def operational_kpis():
             {
                 "key": "invoice_lines_with_exceptions",
                 "label": "Invoice lines with exceptions",
-                "value": SupplierInvoiceLine.objects.filter(match_status__in=[MatchStatus.EXCEPTION, MatchStatus.DIFFERENCE]).count(),
+                "value": invoice_lines.filter(match_status__in=[MatchStatus.EXCEPTION, MatchStatus.DIFFERENCE]).count(),
                 "unit": "lines",
                 "tone": "red",
             },
@@ -151,18 +179,26 @@ def operational_kpis():
             {
                 "key": "supplier_invoices_pending_control",
                 "label": "Supplier invoices pending control",
-                "value": SupplierInvoice.objects.exclude(status__in=[SupplierInvoiceStatus.PAID, SupplierInvoiceStatus.CLOSED]).count(),
+                "value": supplier_invoices.exclude(status__in=[SupplierInvoiceStatus.PAID, SupplierInvoiceStatus.CLOSED]).count(),
                 "unit": "invoices",
                 "tone": "teal",
             },
+            {
+                "key": "tickets_awaiting_invoice",
+                "label": "Tickets awaiting a supplier invoice",
+                "value": summary["tickets"]["awaiting_invoice"],
+                "unit": "tickets",
+                "tone": "amber",
+            },
+            *unbilled_amount_kpis,
             *unpaid_amount_kpis,
         ]
     }
 
 
-def cost_by_month():
+def cost_by_month(user=None):
     rows = (
-        SupplierInvoice.objects.annotate(month=TruncMonth("invoice_date"))
+        _scoped_supplier_invoices(user).annotate(month=TruncMonth("invoice_date"))
         .values("month", "currency")
         .annotate(invoice_count=Count("id"), total_amount=Sum("total_amount"))
         .order_by("month", "currency")
@@ -180,9 +216,9 @@ def cost_by_month():
     }
 
 
-def cost_by_project():
+def cost_by_project(user=None):
     rows = list(
-        SupplierInvoiceLine.objects.filter(travel_case__isnull=False)
+        _scoped_invoice_lines(user).filter(travel_case__isnull=False)
         .values(
             "travel_case__project_id",
             "travel_case__project__code",
@@ -195,18 +231,18 @@ def cost_by_project():
     return {"results": _with_share(_project_cost_row(row) for row in rows)}
 
 
-def cost_by_supplier():
+def cost_by_supplier(user=None):
     rows = list(
-        SupplierInvoice.objects.values("supplier_id", "supplier__code", "supplier__name", "currency")
+        _scoped_supplier_invoices(user).values("supplier_id", "supplier__code", "supplier__name", "currency")
         .annotate(invoice_count=Count("id"), total_amount=Sum("total_amount"))
         .order_by("-total_amount", "supplier__name")
     )
     return {"results": _with_share(_supplier_cost_row(row) for row in rows)}
 
 
-def cost_by_route():
+def cost_by_route(user=None):
     rows = list(
-        SupplierInvoiceLine.objects.exclude(route_from="")
+        _scoped_invoice_lines(user).exclude(route_from="")
         .exclude(route_to="")
         .values("route_from", "route_to", "currency")
         .annotate(ticket_count=Count("id"), total_amount=Sum("invoiced_amount"))
@@ -215,10 +251,48 @@ def cost_by_route():
     return {"results": _with_share(_route_cost_row(row) for row in rows)}
 
 
-def supplier_aging():
+def unbilled_tickets_by_supplier(user=None):
+    """Committed ticket spend per supplier that has not been invoiced yet.
+
+    This is the accrual side of the finance picture: the finance control report
+    only sees money that already reached a TBCN, so without this a booked ticket
+    is invisible until its supplier invoice arrives.
+    """
+    today = timezone.localdate()
+    cutoff = timezone.now() - timedelta(days=TICKET_INVOICE_FOLLOW_UP_DAYS)
+    rows = list(
+        _tickets_awaiting_invoice(user)
+        .values("supplier_id", "supplier__code", "supplier__name", "currency")
+        .annotate(
+            ticket_count=Count("id"),
+            total_amount=Sum("amount"),
+            overdue_count=Count("id", filter=Q(billing_state_changed_at__lt=cutoff)),
+            oldest_awaiting_since=Min("billing_state_changed_at"),
+        )
+        .order_by("-total_amount", "supplier__name")
+    )
+    results = []
+    for row in rows:
+        oldest = row["oldest_awaiting_since"]
+        results.append(
+            {
+                "supplier_id": row["supplier_id"],
+                "supplier_code": row["supplier__code"],
+                "supplier_name": row["supplier__name"],
+                "currency": row["currency"],
+                "ticket_count": row["ticket_count"],
+                "total_amount": row["total_amount"] or ZERO,
+                "overdue_count": row["overdue_count"],
+                "oldest_age_days": max((today - timezone.localtime(oldest).date()).days, 0) if oldest else 0,
+            }
+        )
+    return {"results": _with_share(results), "follow_up_days": TICKET_INVOICE_FOLLOW_UP_DAYS}
+
+
+def supplier_aging(user=None):
     today = timezone.localdate()
     grouped = defaultdict(lambda: {"invoice_count": 0, "total_amount": ZERO})
-    invoices = SupplierInvoice.objects.exclude(status__in=[SupplierInvoiceStatus.PAID, SupplierInvoiceStatus.CLOSED]).prefetch_related(
+    invoices = _scoped_supplier_invoices(user).exclude(status__in=[SupplierInvoiceStatus.PAID, SupplierInvoiceStatus.CLOSED]).prefetch_related(
         "billing_confirmations"
     )
 
@@ -251,7 +325,7 @@ def supplier_aging():
 
 def pending_actions_for_user(user):
     roles = set(user.groups.values_list("name", flat=True))
-    is_all = user.is_staff or user.is_superuser or "Admin" in roles or "Auditor" in roles
+    is_all = user.is_staff or user.is_superuser or "SuperAdmin" in roles or "Admin" in roles or "Auditor" in roles
     items = []
 
     def include(*allowed_roles):
@@ -264,28 +338,34 @@ def pending_actions_for_user(user):
     if include("BookingOfficer", "BookingManager"):
         items.extend(_ticket_extraction_actions())
 
+    # Chasing the supplier for a missing invoice is shared between the booking
+    # desk that placed the order and HR that controls the billing.
+    if include("HR", "BookingOfficer", "BookingManager"):
+        items.extend(_tickets_awaiting_invoice_actions(user))
+
     if include("HR"):
         items.extend(_invoice_extraction_actions())
-        items.extend(_invoice_exception_actions())
-        items.extend(_invoice_hr_approval_actions())
-        items.extend(_tbcn_ready_actions())
-        items.extend(_tbcn_not_sent_actions())
-        items.extend(_permit_actions())
+        items.extend(_invoice_exception_actions(user))
+        items.extend(_invoice_hr_approval_actions(user))
+        items.extend(_tbcn_ready_actions(user))
+        items.extend(_tbcn_not_sent_actions(user))
+        items.extend(_permit_actions(user))
 
     if include("Finance"):
-        items.extend(_finance_acceptance_actions())
-        items.extend(_finance_payment_actions())
+        items.extend(_finance_acceptance_actions(user))
+        items.extend(_finance_payment_actions(user))
 
     if is_all:
         items.extend(_ticket_extraction_actions())
         items.extend(_invoice_extraction_actions())
-        items.extend(_invoice_exception_actions())
-        items.extend(_invoice_hr_approval_actions())
-        items.extend(_tbcn_ready_actions())
-        items.extend(_tbcn_not_sent_actions())
-        items.extend(_finance_acceptance_actions())
-        items.extend(_finance_payment_actions())
-        items.extend(_permit_actions())
+        items.extend(_tickets_awaiting_invoice_actions(user))
+        items.extend(_invoice_exception_actions(user))
+        items.extend(_invoice_hr_approval_actions(user))
+        items.extend(_tbcn_ready_actions(user))
+        items.extend(_tbcn_not_sent_actions(user))
+        items.extend(_finance_acceptance_actions(user))
+        items.extend(_finance_payment_actions(user))
+        items.extend(_permit_actions(user))
 
     items = _dedupe_items(items)
     grouped = _group_pending_items(items)
@@ -296,6 +376,45 @@ def pending_actions_for_user(user):
 def _amounts_by_currency(queryset):
     rows = queryset.values("currency").annotate(amount=Sum("total_amount")).order_by("currency")
     return [{"currency": row["currency"], "amount": row["amount"] or ZERO} for row in rows]
+
+
+def _ticket_amounts_by_currency(queryset):
+    rows = queryset.values("currency").annotate(amount=Sum("amount")).order_by("currency")
+    return [{"currency": row["currency"], "amount": row["amount"] or ZERO} for row in rows]
+
+
+def _tickets_awaiting_invoice(user=None):
+    """Confirmed tickets that are a committed cost with no supplier invoice yet."""
+    return _scoped_tickets(user).filter(billing_state=TicketBillingState.AWAITING_INVOICE)
+
+
+def _overdue_awaiting_invoice(queryset):
+    cutoff = timezone.now() - timedelta(days=TICKET_INVOICE_FOLLOW_UP_DAYS)
+    return queryset.filter(billing_state_changed_at__lt=cutoff)
+
+
+def _scoped_travel_cases(user=None):
+    return apply_scope_filter(TravelCase.objects.all(), user, "travel_case")
+
+
+def _scoped_tickets(user=None):
+    return TicketVersion.objects.filter(travel_case__in=_scoped_travel_cases(user))
+
+
+def _scoped_supplier_invoices(user=None):
+    return apply_scope_filter(SupplierInvoice.objects.all(), user, "supplier_invoice")
+
+
+def _scoped_tbcn(user=None):
+    return apply_scope_filter(TravelBillingConfirmationNote.objects.all(), user, "tbcn")
+
+
+def _scoped_invoice_lines(user=None):
+    return SupplierInvoiceLine.objects.filter(supplier_invoice__in=_scoped_supplier_invoices(user))
+
+
+def _scoped_permits(user=None):
+    return Permit.objects.filter(travel_case__in=_scoped_travel_cases(user))
 
 
 def _with_share(rows):
@@ -385,6 +504,7 @@ def _bucket_sort(bucket):
 
 
 def _travel_cases_awaiting_booking(user):
+    queryset = apply_scope_filter(TravelCase.objects.all(), user, "travel_case")
     return [
         _action(
             item_id=f"travel-case-booking-{case.id}",
@@ -398,7 +518,7 @@ def _travel_cases_awaiting_booking(user):
             url=f"/travel-requests/{case.id}",
             group_key="travel_booking",
         )
-        for case in TravelCase.objects.filter(current_status__in=[TravelCaseStatus.SUBMITTED_BY_HR, TravelCaseStatus.UNDER_BOOKING]).select_related(
+        for case in queryset.filter(current_status__in=[TravelCaseStatus.SUBMITTED_BY_HR, TravelCaseStatus.UNDER_BOOKING]).select_related(
             "assigned_to"
         )[:25]
     ]
@@ -468,7 +588,31 @@ def _invoice_extraction_actions():
     ]
 
 
-def _invoice_exception_actions():
+def _tickets_awaiting_invoice_actions(user):
+    """Chase list for booked tickets whose supplier invoice is overdue.
+
+    Only overdue tickets are surfaced so the queue stays actionable; the full
+    awaiting-invoice list is available through the unbilled-tickets report.
+    """
+    queryset = _overdue_awaiting_invoice(_tickets_awaiting_invoice(user))
+    return [
+        _action(
+            item_id=f"ticket-awaiting-invoice-{ticket.id}",
+            item_type="TICKET_AWAITING_INVOICE",
+            title="Booked ticket awaiting a supplier invoice",
+            description=f"{ticket.ticket_number} on {ticket.travel_case.case_number} has no supplier invoice yet",
+            status=ticket.billing_state,
+            priority="NORMAL",
+            source_date=ticket.billing_state_changed_at,
+            assigned_to_me=False,
+            url=f"/travel-requests/{ticket.travel_case_id}/tickets",
+            group_key="tickets_awaiting_invoice",
+        )
+        for ticket in queryset.select_related("travel_case", "supplier").order_by("billing_state_changed_at")[:25]
+    ]
+
+
+def _invoice_exception_actions(user):
     return [
         _action(
             item_id=f"invoice-line-{line.id}",
@@ -482,12 +626,12 @@ def _invoice_exception_actions():
             url=f"/supplier-invoices/{line.supplier_invoice_id}/matching",
             group_key="invoice_exceptions",
         )
-        for line in SupplierInvoiceLine.objects.filter(match_status__in=[MatchStatus.UNMATCHED, MatchStatus.DIFFERENCE, MatchStatus.EXCEPTION])
+        for line in _scoped_invoice_lines(user).filter(match_status__in=[MatchStatus.UNMATCHED, MatchStatus.DIFFERENCE, MatchStatus.EXCEPTION])
         .select_related("supplier_invoice")[:25]
     ]
 
 
-def _invoice_hr_approval_actions():
+def _invoice_hr_approval_actions(user):
     return [
         _action(
             item_id=f"invoice-hr-approval-{invoice.id}",
@@ -501,11 +645,11 @@ def _invoice_hr_approval_actions():
             url=f"/supplier-invoices/{invoice.id}/matching",
             group_key="hr_approval",
         )
-        for invoice in SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.MATCHED).select_related("supplier")[:25]
+        for invoice in _scoped_supplier_invoices(user).filter(status=SupplierInvoiceStatus.MATCHED).select_related("supplier")[:25]
     ]
 
 
-def _tbcn_ready_actions():
+def _tbcn_ready_actions(user):
     return [
         _action(
             item_id=f"invoice-tbcn-ready-{invoice.id}",
@@ -519,11 +663,11 @@ def _tbcn_ready_actions():
             url=f"/supplier-invoices/{invoice.id}/matching",
             group_key="tbcn_ready",
         )
-        for invoice in SupplierInvoice.objects.filter(status=SupplierInvoiceStatus.HR_APPROVED, billing_confirmations__isnull=True)[:25]
+        for invoice in _scoped_supplier_invoices(user).filter(status=SupplierInvoiceStatus.HR_APPROVED, billing_confirmations__isnull=True)[:25]
     ]
 
 
-def _tbcn_not_sent_actions():
+def _tbcn_not_sent_actions(user):
     return [
         _action(
             item_id=f"tbcn-not-sent-{tbcn.id}",
@@ -537,14 +681,14 @@ def _tbcn_not_sent_actions():
             url=f"/tbcn/{tbcn.id}",
             group_key="tbcn_not_sent",
         )
-        for tbcn in TravelBillingConfirmationNote.objects.filter(
+        for tbcn in _scoped_tbcn(user).filter(
             status=BillingConfirmationStatus.GENERATED,
             finance_status=FinanceStatus.NOT_SENT,
         )[:25]
     ]
 
 
-def _finance_acceptance_actions():
+def _finance_acceptance_actions(user):
     return [
         _action(
             item_id=f"tbcn-finance-acceptance-{tbcn.id}",
@@ -558,11 +702,11 @@ def _finance_acceptance_actions():
             url=f"/tbcn/{tbcn.id}",
             group_key="finance_acceptance",
         )
-        for tbcn in TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.SENT)[:25]
+        for tbcn in _scoped_tbcn(user).filter(finance_status=FinanceStatus.SENT)[:25]
     ]
 
 
-def _finance_payment_actions():
+def _finance_payment_actions(user):
     return [
         _action(
             item_id=f"tbcn-payment-{tbcn.id}",
@@ -576,11 +720,11 @@ def _finance_payment_actions():
             url=f"/tbcn/{tbcn.id}",
             group_key="finance_payment",
         )
-        for tbcn in TravelBillingConfirmationNote.objects.filter(finance_status=FinanceStatus.ACCEPTED)[:25]
+        for tbcn in _scoped_tbcn(user).filter(finance_status=FinanceStatus.ACCEPTED)[:25]
     ]
 
 
-def _permit_actions():
+def _permit_actions(user):
     today = timezone.localdate()
     return [
         _action(
@@ -595,7 +739,7 @@ def _permit_actions():
             url=f"/travel-requests/{permit.travel_case_id}/permits",
             group_key="permits",
         )
-        for permit in Permit.objects.filter(Q(status__in=[PermitStatus.PENDING, PermitStatus.EXPIRED]) | Q(expiry_date__lt=today)).select_related(
+        for permit in _scoped_permits(user).filter(Q(status__in=[PermitStatus.PENDING, PermitStatus.EXPIRED]) | Q(expiry_date__lt=today)).select_related(
             "travel_case"
         )[:25]
     ]

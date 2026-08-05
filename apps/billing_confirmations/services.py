@@ -11,6 +11,8 @@ from apps.audit_logs.services import create_audit_log
 from apps.common.services.locking import lock_instance
 from apps.common.services.sequences import generate_sequence
 from apps.supplier_invoices.models import SupplierInvoice, SupplierInvoiceStatus
+from apps.travel_cases.models import TravelCaseStatus
+from apps.travel_cases.services import advance_travel_case_status
 
 from .models import BillingConfirmationStatus, FinanceStatus, TravelBillingConfirmationNote
 
@@ -23,6 +25,15 @@ def next_tbcn_number(country_code: str, year: int | None = None) -> str:
 def lock_records_after_tbcn(*records) -> None:
     for record in records:
         lock_instance(record)
+
+
+def _tbcn_travel_cases(tbcn):
+    """Distinct travel cases linked to a TBCN through its supplier invoice lines."""
+    cases = {}
+    for line in tbcn.supplier_invoice.lines.select_related("travel_case").all():
+        if line.travel_case_id:
+            cases[line.travel_case_id] = line.travel_case
+    return list(cases.values())
 
 
 def generate_tbcn(supplier_invoice, user) -> TravelBillingConfirmationNote:
@@ -246,11 +257,20 @@ def send_tbcn_to_finance(tbcn, user):
     if tbcn.status not in [BillingConfirmationStatus.GENERATED, BillingConfirmationStatus.REVIEWED]:
         raise ValidationError("Only generated TBCNs can be sent to finance.")
     old_value = {"status": tbcn.status, "finance_status": tbcn.finance_status}
-    tbcn.sent_to_finance_by = user
-    tbcn.sent_to_finance_at = timezone.now()
-    tbcn.finance_status = FinanceStatus.SENT
-    tbcn.status = BillingConfirmationStatus.SENT_TO_FINANCE
-    tbcn.save(update_fields=["sent_to_finance_by", "sent_to_finance_at", "finance_status", "status", "updated_at"])
+    with transaction.atomic():
+        tbcn.sent_to_finance_by = user
+        tbcn.sent_to_finance_at = timezone.now()
+        tbcn.finance_status = FinanceStatus.SENT
+        tbcn.status = BillingConfirmationStatus.SENT_TO_FINANCE
+        tbcn.save(update_fields=["sent_to_finance_by", "sent_to_finance_at", "finance_status", "status", "updated_at"])
+        for travel_case in _tbcn_travel_cases(tbcn):
+            advance_travel_case_status(
+                travel_case,
+                TravelCaseStatus.SENT_TO_FINANCE,
+                user,
+                action="Travel Case Sent To Finance",
+                metadata={"tbcn": tbcn.id, "supplier_invoice": tbcn.supplier_invoice_id},
+            )
     create_audit_log(
         user=user,
         action="TBCN Sent To Finance",
@@ -288,9 +308,18 @@ def mark_tbcn_paid(tbcn, user):
     if tbcn.status != BillingConfirmationStatus.FINANCE_ACCEPTED or tbcn.finance_status != FinanceStatus.ACCEPTED:
         raise ValidationError("TBCN must be finance accepted before marking paid.")
     old_value = {"status": tbcn.status, "finance_status": tbcn.finance_status}
-    tbcn.finance_status = FinanceStatus.PAID
-    tbcn.status = BillingConfirmationStatus.PAID
-    tbcn.save(update_fields=["finance_status", "status", "updated_at"])
+    with transaction.atomic():
+        tbcn.finance_status = FinanceStatus.PAID
+        tbcn.status = BillingConfirmationStatus.PAID
+        tbcn.save(update_fields=["finance_status", "status", "updated_at"])
+        for travel_case in _tbcn_travel_cases(tbcn):
+            advance_travel_case_status(
+                travel_case,
+                TravelCaseStatus.PAID,
+                user,
+                action="Travel Case Paid",
+                metadata={"tbcn": tbcn.id, "supplier_invoice": tbcn.supplier_invoice_id},
+            )
     create_audit_log(
         user=user,
         action="TBCN Paid",

@@ -212,6 +212,29 @@ class SupplierInvoicePhase10Tests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(TravelBillingConfirmationNote.objects.count(), 0)
 
+    def test_invoice_lines_can_be_filtered_by_travel_case(self):
+        invoice = self._create_invoice()
+        self._create_line(invoice)
+        self._create_line(invoice, ticket_number="MISSING")
+        self.client.post("/api/v1/invoice-matching/match-invoice/", {"supplier_invoice": invoice.id}, format="json")
+
+        response = self.client.get(f"/api/v1/supplier-invoice-lines/?travel_case={self.travel_case.id}")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["travel_case"], self.travel_case.id)
+        self.assertEqual(response.data[0]["ticket_number"], "1761234567890")
+
+    def test_invoice_line_exposes_supplier_and_supplier_invoice_number(self):
+        invoice = self._create_invoice()
+        line = self._create_line(invoice)
+
+        response = self.client.get(f"/api/v1/supplier-invoice-lines/{line.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["supplier_name"], self.supplier.name)
+        self.assertEqual(response.data["supplier_invoice_number"], invoice.supplier_invoice_number)
+
     def test_audit_logs_are_created(self):
         job = self._create_extraction_job()
 

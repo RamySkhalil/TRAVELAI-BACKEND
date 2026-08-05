@@ -22,23 +22,34 @@ from .prompts import (
 )
 from .tool_registry import get_tool, is_allowed_tool, tool_descriptions
 
-SAFETY_NOTICE = "Read-only answer. No records were changed."
+SAFETY_NOTICE = {
+    "en": "Read-only answer. No records were changed.",
+    "ar": "إجابة للقراءة فقط. لم يتم تغيير أي سجلات.",
+}
 
 MAX_MESSAGE_LENGTH = 1000
 
-# Action verbs the copilot must refuse in this read-only phase.
+# Arabic Unicode ranges used for lightweight language detection.
+ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
+
+# Action verbs the copilot must refuse in this read-only phase (English + Arabic).
 ACTION_PATTERNS = (
     "create", "submit", "assign", "confirm", "approve", "generate", "issue",
     "send to finance", "mark paid", "mark as paid", "mark accepted", "accept ",
     "pay ", "delete", "remove", "edit", "update", "change the", "cancel ",
+    "أنشئ", "انشئ", "أنشئي", "قدّم", "قدم", "أرسل", "ارسل", "اعتمد", "وافق",
+    "ولّد", "ولد", "أصدر", "اصدر", "احذف", "امسح", "عدّل", "عدل", "ادفع",
+    "خصّص", "خصص", "أكّد", "أكد", "اكد", "ألغِ", "ألغ", "الغ",
 )
 
 # If any of these inquiry words are present, the message is treated as a
-# question (route to a read tool), not an action request.
+# question (route to a read tool), not an action request (English + Arabic).
 INQUIRY_WORDS = (
     "why", "what", "which", "who", "when", "show", "list", "find", "search",
     "is ", "are ", "can ", "does", "do ", "status", "explain", "summar",
     "how many", "tell me", "any ", "view",
+    "ما", "ماذا", "لماذا", "أي", "أين", "متى", "من ", "هل", "اعرض", "أظهر",
+    "اظهر", "ابحث", "كم", "اشرح", "لخص", "لخّص", "ملخص",
 )
 
 # Identifier patterns for the controlled record vocabulary.
@@ -47,34 +58,68 @@ SIR_RE = re.compile(r"SIR-[A-Z]{2}-\d{4}-\d{4,8}", re.IGNORECASE)
 TBCN_RE = re.compile(r"TBCN-[A-Z]{2}-\d{4}-\d{4,8}", re.IGNORECASE)
 
 ROLE_SUGGESTED_QUESTIONS = {
-    "HR": [
-        "Which invoices are ready for TBCN?",
+    "en": {
+        "HR": [
+            "Which invoices are ready for TBCN?",
+            "Which invoices have exceptions?",
+            "Show travel cases pending booking.",
+        ],
+        "BookingOfficer": [
+            "Show travel cases pending booking.",
+            "Show my pending actions.",
+            "Show ticket history for a case.",
+        ],
+        "Finance": [
+            "Which TBCNs are unpaid?",
+            "Show cost by supplier grouped by currency.",
+            "Show my pending actions.",
+        ],
+    },
+    "ar": {
+        "HR": [
+            "أي فواتير جاهزة لإصدار TBCN؟",
+            "أي فواتير بها استثناءات؟",
+            "اعرض حالات السفر بانتظار الحجز.",
+        ],
+        "BookingOfficer": [
+            "اعرض حالات السفر بانتظار الحجز.",
+            "اعرض مهامي المعلقة.",
+            "اعرض تاريخ التذاكر لحالة سفر.",
+        ],
+        "Finance": [
+            "أي إشعارات TBCN غير مدفوعة؟",
+            "اعرض التكلفة حسب المورد لكل عملة.",
+            "اعرض مهامي المعلقة.",
+        ],
+    },
+}
+
+DEFAULT_SUGGESTED_QUESTIONS = {
+    "en": [
+        "What needs my attention today?",
         "Which invoices have exceptions?",
-        "Show travel cases pending booking.",
-    ],
-    "BookingOfficer": [
-        "Show travel cases pending booking.",
-        "Show my pending actions.",
-        "Show ticket history for a case.",
-    ],
-    "Finance": [
         "Which TBCNs are unpaid?",
         "Show cost by supplier grouped by currency.",
-        "Show my pending actions.",
+    ],
+    "ar": [
+        "ما الذي يحتاج انتباهي اليوم؟",
+        "أي فواتير بها استثناءات؟",
+        "أي إشعارات TBCN غير مدفوعة؟",
+        "اعرض التكلفة حسب المورد لكل عملة.",
     ],
 }
 
-DEFAULT_SUGGESTED_QUESTIONS = [
-    "What needs my attention today?",
-    "Which invoices have exceptions?",
-    "Which TBCNs are unpaid?",
-    "Show cost by supplier grouped by currency.",
-]
-
 CONTEXT_SUGGESTED_QUESTIONS = {
-    "travelCaseDetail": ["Summarize this case.", "What is the next action?", "Are permits complete?", "Show ticket history."],
-    "invoiceMatching": ["Why is this invoice blocked?", "Show exceptions.", "Is this ready for TBCN?"],
-    "tbcnDetail": ["Can this be sent to Finance?", "Has this been paid?", "Is the PDF available?"],
+    "en": {
+        "travelCaseDetail": ["Summarize this case.", "What is the next action?", "Are permits complete?", "Show ticket history."],
+        "invoiceMatching": ["Why is this invoice blocked?", "Show exceptions.", "Is this ready for TBCN?"],
+        "tbcnDetail": ["Can this be sent to Finance?", "Has this been paid?", "Is the PDF available?"],
+    },
+    "ar": {
+        "travelCaseDetail": ["لخّص هذه الحالة.", "ما هو الإجراء التالي؟", "هل التصاريح مكتملة؟", "اعرض تاريخ التذاكر."],
+        "invoiceMatching": ["لماذا هذه الفاتورة محظورة؟", "اعرض الاستثناءات.", "هل هذه جاهزة لإصدار TBCN؟"],
+        "tbcnDetail": ["هل يمكن إرسالها إلى المالية؟", "هل تم دفعها؟", "هل ملف PDF متاح؟"],
+    },
 }
 
 # Screen -> manual action link used when refusing an action request.
@@ -87,18 +132,24 @@ SCREEN_ACTION_LINKS = {
 }
 
 
+def detect_language(message: str) -> str:
+    """Return 'ar' when the message contains Arabic script, else 'en'."""
+    return "ar" if ARABIC_RE.search(message or "") else "en"
+
+
 def run_copilot_chat(user, message: str, context: dict | None = None) -> dict:
     context = context or {}
     message = (message or "").strip()
+    lang = detect_language(message)
     if not message:
-        return _clarification(user, context, "Ask me about travel cases, tickets, permits, invoices, TBCNs, finance status, or pending actions.")
+        return _clarification(user, context, lang)
     message = message[:MAX_MESSAGE_LENGTH]
 
     used_openai = False
 
     # 1) Refuse mutation requests with a safe explanation and a manual link.
     if _is_action_request(message):
-        response = _action_refusal(message, context)
+        response = _action_refusal(message, context, lang)
         _log_usage(user, message, response["_tools"], context, used_openai)
         return _public_response(response)
 
@@ -113,13 +164,13 @@ def run_copilot_chat(user, message: str, context: dict | None = None) -> dict:
             tool_name, arguments = selected
 
     if not tool_name:
-        response = _clarification(user, context)
+        response = _clarification(user, context, lang)
         _log_usage(user, message, response["_tools"], context, used_openai)
         return _public_response(response)
 
     tool = get_tool(tool_name)
     if tool is None or not is_allowed_tool(tool_name):
-        response = _clarification(user, context, "I can only answer using approved read-only tools.")
+        response = _clarification(user, context, lang)
         _log_usage(user, message, response["_tools"], context, used_openai)
         return _public_response(response)
 
@@ -135,8 +186,8 @@ def run_copilot_chat(user, message: str, context: dict | None = None) -> dict:
     response = {
         "answer": answer,
         "cards": tool_result["cards"],
-        "suggested_questions": _suggested_questions(user, context),
-        "safety_notice": SAFETY_NOTICE,
+        "suggested_questions": _suggested_questions(user, context, lang),
+        "safety_notice": SAFETY_NOTICE[lang],
         "_tools": [tool_name],
     }
     _log_usage(user, message, response["_tools"], context, used_openai)
@@ -154,7 +205,39 @@ def _is_action_request(message: str) -> bool:
     return any(pattern in lowered for pattern in ACTION_PATTERNS)
 
 
-def _action_refusal(message: str, context: dict) -> dict:
+ACTION_REFUSAL_ANSWER = {
+    "en": (
+        "I can't perform actions in this read-only phase. I can explain status and next steps, "
+        "but creating, approving, generating, sending, or paying must be done by a person on the relevant screen. "
+        "Open the screen below to perform this action manually."
+    ),
+    "ar": (
+        "لا يمكنني تنفيذ الإجراءات في هذه المرحلة المخصّصة للقراءة فقط. يمكنني شرح الحالة والخطوات التالية، "
+        "أمّا الإنشاء أو الاعتماد أو التوليد أو الإرسال أو الدفع فيجب أن يقوم به شخص على الشاشة المعنية. "
+        "افتح الشاشة أدناه لتنفيذ هذا الإجراء يدويًا."
+    ),
+}
+
+ACTION_REFUSAL_CARD = {
+    "en": {"title": "Action required on screen", "subtitle": "TravelOps Copilot is read-only in this phase."},
+    "ar": {"title": "الإجراء مطلوب على الشاشة", "subtitle": "مساعد TravelOps للقراءة فقط في هذه المرحلة."},
+}
+
+CLARIFICATION_ANSWER = {
+    "en": (
+        "I'm not sure what you're asking. I can help with pending actions, travel case status, "
+        "ticket history, permits, supplier invoices, invoice exceptions, TBCN readiness, unpaid TBCNs by currency, "
+        "and why a record is blocked. Try one of the suggested questions."
+    ),
+    "ar": (
+        "لست متأكدًا مما تسأل عنه. يمكنني المساعدة في المهام المعلقة، وحالة طلب السفر، وتاريخ التذاكر، والتصاريح، "
+        "وفواتير المورّدين، واستثناءات الفواتير، وجاهزية TBCN، وإشعارات TBCN غير المدفوعة حسب العملة، "
+        "وسبب توقّف أي سجل. جرّب أحد الأسئلة المقترحة."
+    ),
+}
+
+
+def _action_refusal(message: str, context: dict, lang: str = "en") -> dict:
     link = SCREEN_ACTION_LINKS.get(context.get("screen"), "/dashboard")
     record_id = context.get("record_id")
     record_type = (context.get("record_type") or "").upper()
@@ -165,39 +248,29 @@ def _action_refusal(message: str, context: dict) -> dict:
     elif record_id and record_type == "TRAVEL_CASE":
         link = f"/travel-requests/{record_id}"
 
-    answer = (
-        "I can't perform actions in this read-only phase. I can explain status and next steps, "
-        "but creating, approving, generating, sending, or paying must be done by a person on the relevant screen. "
-        "Open the screen below to perform this action manually."
-    )
     return {
-        "answer": answer,
+        "answer": ACTION_REFUSAL_ANSWER[lang],
         "cards": [
             {
                 "type": "SUMMARY",
-                "title": "Action required on screen",
-                "subtitle": "TravelOps Copilot is read-only in this phase.",
+                "title": ACTION_REFUSAL_CARD[lang]["title"],
+                "subtitle": ACTION_REFUSAL_CARD[lang]["subtitle"],
                 "status": "READ_ONLY",
                 "url": link,
             }
         ],
-        "suggested_questions": CONTEXT_SUGGESTED_QUESTIONS.get(context.get("screen"), DEFAULT_SUGGESTED_QUESTIONS),
-        "safety_notice": SAFETY_NOTICE,
+        "suggested_questions": _suggested_questions(None, context, lang),
+        "safety_notice": SAFETY_NOTICE[lang],
         "_tools": [],
     }
 
 
-def _clarification(user, context: dict, message: str | None = None) -> dict:
-    answer = message or (
-        "I'm not sure what you're asking. I can help with pending actions, travel case status, "
-        "ticket history, permits, supplier invoices, invoice exceptions, TBCN readiness, unpaid TBCNs by currency, "
-        "and why a record is blocked. Try one of the suggested questions."
-    )
+def _clarification(user, context: dict, lang: str = "en") -> dict:
     return {
-        "answer": answer,
+        "answer": CLARIFICATION_ANSWER[lang],
         "cards": [],
-        "suggested_questions": _suggested_questions(user, context),
-        "safety_notice": SAFETY_NOTICE,
+        "suggested_questions": _suggested_questions(user, context, lang),
+        "safety_notice": SAFETY_NOTICE[lang],
         "_tools": [],
     }
 
@@ -216,100 +289,118 @@ def _route_deterministic(message: str, context: dict) -> tuple[str | None, dict]
     lowered = message.lower()
     identifier = _extract_identifier(message, context)
 
+    record_type = (context.get("record_type") or "").upper()
+
     def has(*keywords: str) -> bool:
         return any(keyword in lowered for keyword in keywords)
 
     # Pending / attention
-    if has("pending", "needs my attention", "need my attention", "attention today", "my action", "my task", "what should i do"):
+    if has("pending", "needs my attention", "need my attention", "attention today", "my action", "my task", "what should i do",
+           "معلق", "انتباه", "اهتمام", "مهامي", "ماذا يجب", "ما يجب"):
         return "get_my_pending_actions", {}
 
     # Unpaid TBCNs by currency
-    if has("unpaid") and has("tbcn", "finance", "currency", "billing"):
+    if has("unpaid", "غير مدفوع", "غير مدفوعة", "لم تدفع", "لم يتم دفع") and has("tbcn", "finance", "currency", "billing", "عملة", "إشعار", "تسوية", "مالية"):
         return "get_unpaid_tbcn_by_currency", {}
     if "unpaid tbcn" in lowered or ("unpaid" in lowered and "by currency" in lowered):
         return "get_unpaid_tbcn_by_currency", {}
 
     # Cost by supplier
-    if has("cost by supplier", "cost per supplier", "spend by supplier", "supplier cost", "cost grouped by supplier"):
+    if has("cost by supplier", "cost per supplier", "spend by supplier", "supplier cost", "cost grouped by supplier",
+           "التكلفة حسب المورد", "تكلفة المورد", "حسب المورد", "التكلفة لكل مورد"):
         return "get_cost_by_supplier", {}
 
     # Blocker explanation
-    if has("blocked", "blocker", "stuck", "cannot move", "can't move", "not moving", "why is", "why can"):
-        record_type = (context.get("record_type") or "").upper()
+    if has("blocked", "blocker", "stuck", "cannot move", "can't move", "not moving", "why is", "why can",
+           "محظور", "محظورة", "متوقف", "متوقفة", "عالق", "عالقة", "لا يتحرك", "لماذا"):
         return "explain_blocker", {"record_type": record_type, "record_id": identifier}
 
     # Ready for TBCN
-    if has("ready for tbcn", "ready for billing", "invoices ready", "ready to generate"):
+    if has("ready for tbcn", "ready for billing", "invoices ready", "ready to generate", "جاهز", "جاهزة"):
         return "get_ready_for_tbcn", {}
 
     # Invoice exceptions
-    if has("exception", "mismatch", "difference") and not identifier.upper().startswith("TBCN"):
+    if has("exception", "mismatch", "difference", "استثناء", "استثناءات", "فرق", "اختلاف") and not identifier.upper().startswith("TBCN"):
         return "get_invoice_exceptions", {}
 
     # Ticket history
-    if has("ticket history", "ticket version", "ticket versions", "history of tickets", "show ticket"):
+    if has("ticket history", "ticket version", "ticket versions", "history of tickets", "show ticket",
+           "تاريخ التذكرة", "تاريخ التذاكر", "نسخ التذكرة", "التذاكر", "تذكرة"):
         return "get_ticket_history", {"identifier": identifier}
 
     # Permit status
-    if has("permit"):
+    if has("permit", "تصريح", "تصاريح"):
         return "get_permit_status", {"identifier": identifier}
 
     # TBCN lookups
-    if identifier.upper().startswith("TBCN") or has("tbcn", "billing confirmation"):
-        if identifier or has("status", "find", "search", "show", "pdf", "paid", "sent to finance"):
-            if has("paid", "sent", "pdf", "status") and identifier:
-                return "search_tbcn", {"query": identifier}
-            return "search_tbcn", {"query": identifier}
+    if identifier.upper().startswith("TBCN") or has("tbcn", "billing confirmation", "تسوية", "إشعار"):
+        return "search_tbcn", {"query": identifier}
 
     # Supplier invoice status vs search
     if identifier.upper().startswith("SIR"):
-        if has("status", "blocked", "ready", "approved", "match", "explain", "why"):
-            return "explain_supplier_invoice_status", {"identifier": identifier}
         return "explain_supplier_invoice_status", {"identifier": identifier}
-    if has("invoice"):
-        if context.get("record_type", "").upper() == "SUPPLIER_INVOICE" and identifier and has("status", "ready", "blocked", "approved", "explain"):
+    if has("invoice", "فاتورة", "فواتير"):
+        if record_type == "SUPPLIER_INVOICE" and identifier and has("status", "ready", "blocked", "approved", "explain", "حالة", "جاهز", "اشرح"):
             return "explain_supplier_invoice_status", {"identifier": identifier}
         return "search_supplier_invoices", {"query": _search_text(message)}
 
     # Travel case status vs search
-    if identifier.upper().startswith("TRV") or context.get("record_type", "").upper() == "TRAVEL_CASE":
-        if has("summar", "status", "next action", "detail"):
+    if identifier.upper().startswith("TRV") or record_type == "TRAVEL_CASE":
+        if has("summar", "status", "next action", "detail", "لخص", "لخّص", "ملخص", "حالة", "الإجراء التالي", "التالي"):
             return "get_travel_case_status", {"identifier": identifier}
         if identifier:
             return "get_travel_case_status", {"identifier": identifier}
-    if has("travel case", "case ", "cases ", "trip", "booking"):
-        if has("status", "summar", "next action") and identifier:
+    if has("travel case", "case ", "cases ", "trip", "booking", "حالة سفر", "حالات سفر", "طلب سفر", "رحلة", "سفر", "حجز", "الحجز"):
+        if has("status", "summar", "next action", "حالة", "لخص", "ملخص") and identifier:
             return "get_travel_case_status", {"identifier": identifier}
         return "search_travel_cases", {"query": _search_text(message)}
 
     # Dashboard / overview
-    if has("dashboard", "overview", "summary", "summarize", "how are we", "snapshot"):
+    if has("dashboard", "overview", "summary", "summarize", "how are we", "snapshot", "لوحة", "نظرة عامة", "ملخص عام"):
         return "get_dashboard_summary", {}
+
+    # Context-aware fallback: a question asked while viewing a specific record.
+    if identifier:
+        if record_type == "TBCN":
+            return "explain_blocker", {"record_type": "TBCN", "record_id": identifier}
+        if record_type == "SUPPLIER_INVOICE":
+            return "explain_supplier_invoice_status", {"identifier": identifier}
+        if record_type == "TRAVEL_CASE":
+            return "get_travel_case_status", {"identifier": identifier}
 
     return None, {}
 
 
+_ARABIC_STOPWORDS = (
+    "اعرض", "أظهر", "اظهر", "ابحث", "عن", "كل", "قائمة", "من", "عن",
+    "حالة", "حالات", "سفر", "رحلة", "فاتورة", "فواتير", "مورد", "المورد", "لكل", "هل", "ما",
+)
+
+
 def _search_text(message: str) -> str:
-    """Strip common command words so search queries are tighter."""
+    """Strip common command words so search queries are tighter (English + Arabic)."""
     cleaned = re.sub(
         r"\b(show|list|find|search|me|all|the|for|travel|case|cases|invoice|invoices|supplier|please|status|of)\b",
         " ",
         message,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"[?.!]", " ", cleaned)
+    for stopword in _ARABIC_STOPWORDS:
+        cleaned = cleaned.replace(stopword, " ")
+    cleaned = re.sub(r"[?.!؟،]", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _suggested_questions(user, context: dict) -> list[str]:
+def _suggested_questions(user, context: dict, lang: str = "en") -> list[str]:
     screen = context.get("screen")
-    if screen in CONTEXT_SUGGESTED_QUESTIONS:
-        return CONTEXT_SUGGESTED_QUESTIONS[screen]
-    roles = set(user.groups.values_list("name", flat=True)) if user and user.is_authenticated else set()
-    for role, questions in ROLE_SUGGESTED_QUESTIONS.items():
+    context_questions = CONTEXT_SUGGESTED_QUESTIONS[lang]
+    if screen in context_questions:
+        return context_questions[screen]
+    roles = set(user.groups.values_list("name", flat=True)) if user and getattr(user, "is_authenticated", False) else set()
+    for role, questions in ROLE_SUGGESTED_QUESTIONS[lang].items():
         if role in roles:
             return questions
-    return DEFAULT_SUGGESTED_QUESTIONS
+    return DEFAULT_SUGGESTED_QUESTIONS[lang]
 
 
 def _log_usage(user, message: str, tools: list[str], context: dict, used_openai: bool) -> None:
@@ -323,6 +414,7 @@ def _log_usage(user, message: str, tools: list[str], context: dict, used_openai:
             "selected_tools": tools,
             "screen": context.get("screen"),
             "record_type": context.get("record_type"),
+            "language": detect_language(message),
             "used_openai": used_openai,
         },
     )

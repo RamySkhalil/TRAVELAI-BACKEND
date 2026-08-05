@@ -28,6 +28,20 @@ class TicketStatus(models.TextChoices):
     LOCKED = "LOCKED", "Locked"
 
 
+class TicketBillingState(models.TextChoices):
+    """Where a confirmed ticket sits between booking and supplier invoicing.
+
+    This is the payable view of a ticket and is deliberately separate from
+    ``TicketStatus``, which describes the travel document itself. A ticket can
+    be ``CANCELLED`` for travel purposes and still be ``AWAITING_INVOICE``
+    because the supplier will bill a penalty for it.
+    """
+
+    NOT_BILLABLE = "NOT_BILLABLE", "Not Billable"
+    AWAITING_INVOICE = "AWAITING_INVOICE", "Awaiting Supplier Invoice"
+    INVOICED = "INVOICED", "Invoiced"
+
+
 class TicketVersion(TimeStampedModel):
     travel_case = models.ForeignKey(TravelCase, on_delete=models.PROTECT, related_name="ticket_versions")
     version_number = models.CharField(max_length=10)
@@ -46,6 +60,9 @@ class TicketVersion(TimeStampedModel):
     currency = models.CharField(max_length=3, choices=CurrencyChoices.choices)
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="ticket_versions")
     ticket_status = models.CharField(max_length=20, choices=TicketStatus.choices, default=TicketStatus.DRAFT)
+    billing_state = models.CharField(max_length=20, choices=TicketBillingState.choices, default=TicketBillingState.NOT_BILLABLE)
+    billing_state_changed_at = models.DateTimeField(null=True, blank=True)
+    billing_state_note = models.TextField(blank=True)
     penalty_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     change_reason = models.TextField(blank=True)
     uploaded_ticket_file = models.FileField(upload_to="tickets/%Y/%m/", blank=True)
@@ -66,6 +83,8 @@ class TicketVersion(TimeStampedModel):
             models.Index(fields=["supplier"]),
             models.Index(fields=["departure_date"]),
             models.Index(fields=["travel_case", "ticket_status"]),
+            models.Index(fields=["billing_state"]),
+            models.Index(fields=["billing_state", "supplier"]),
         ]
         ordering = ["travel_case", "version_number"]
 

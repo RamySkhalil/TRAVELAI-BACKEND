@@ -3,6 +3,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from apps.access_control.permissions import apply_scope_filter
 from apps.ai_extraction.models import DocumentExtractionJob
 from apps.common.permissions import RoleBasedOperationalPermission
 from apps.master_data.models import Supplier
@@ -28,6 +29,9 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
     filterset_class = SupplierInvoiceFilter
     search_fields = ["invoice_record_number", "supplier_invoice_number", "supplier__name"]
     ordering_fields = ["created_at", "invoice_date", "received_date", "status", "total_amount"]
+
+    def get_queryset(self):
+        return apply_scope_filter(super().get_queryset(), self.request.user, "supplier_invoice")
 
     def perform_create(self, serializer):
         invoice = create_supplier_invoice(serializer.validated_data, self.request.user)
@@ -68,7 +72,9 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
 
 
 class SupplierInvoiceLineViewSet(viewsets.ModelViewSet):
-    queryset = SupplierInvoiceLine.objects.select_related("supplier_invoice", "travel_case", "ticket_version", "employee").all()
+    queryset = SupplierInvoiceLine.objects.select_related(
+        "supplier_invoice", "supplier_invoice__supplier", "travel_case", "ticket_version", "employee"
+    ).all()
     serializer_class = SupplierInvoiceLineSerializer
     permission_classes = [SupplierInvoiceLinePermission]
     filterset_class = SupplierInvoiceLineFilter

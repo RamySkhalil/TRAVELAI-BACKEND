@@ -7,6 +7,8 @@ from .models import SupplierInvoice, SupplierInvoiceLine
 
 class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
     supplier_invoice_record_number = serializers.CharField(source="supplier_invoice.invoice_record_number", read_only=True)
+    supplier_invoice_number = serializers.CharField(source="supplier_invoice.supplier_invoice_number", read_only=True)
+    supplier_name = serializers.CharField(source="supplier_invoice.supplier.name", read_only=True)
     travel_case_number = serializers.CharField(source="travel_case.case_number", read_only=True)
     ticket_version_number = serializers.CharField(source="ticket_version.version_number", read_only=True)
     ticket_version_ticket_number = serializers.CharField(source="ticket_version.ticket_number", read_only=True)
@@ -21,6 +23,8 @@ class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
             "updated_at",
             "supplier_invoice",
             "supplier_invoice_record_number",
+            "supplier_invoice_number",
+            "supplier_name",
             "travel_case",
             "travel_case_number",
             "ticket_version",
@@ -41,7 +45,14 @@ class SupplierInvoiceLineSerializer(serializers.ModelSerializer):
             "exception_reason",
             "is_locked",
         ]
-        read_only_fields = ("difference_amount", "is_locked", "created_at", "updated_at")
+        read_only_fields = (
+            "difference_amount",
+            "supplier_invoice_number",
+            "supplier_name",
+            "is_locked",
+            "created_at",
+            "updated_at",
+        )
 
     def validate_currency(self, value):
         return normalize_currency(value)

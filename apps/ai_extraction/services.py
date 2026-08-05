@@ -8,7 +8,7 @@ from apps.audit_logs.services import create_audit_log
 from apps.travel_cases.models import TravelCase, TravelCaseStatus
 
 from .models import AiExtractionCorrection, DocumentExtractionJob, DocumentType, ExtractionStatus
-from .providers import MockExtractionProvider, OpenAIExtractionProvider
+from .providers import ExtractionDocument, MockExtractionProvider, OpenAIExtractionProvider
 
 
 SOURCE_TEXT_KEY = "_source_text"
@@ -16,6 +16,15 @@ PROVIDERS = {
     "mock": MockExtractionProvider,
     "openai": OpenAIExtractionProvider,
 }
+
+# File extension -> MIME type for source documents the extraction pipeline accepts.
+SUPPORTED_BINARY_MIME_TYPES = {
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+}
+TEXT_EXTENSIONS = {"txt", "text"}
 
 
 def create_extraction_job(document_type, source_file=None, raw_text: str = "", user=None) -> DocumentExtractionJob:
@@ -214,8 +223,8 @@ def _run_extraction(job: DocumentExtractionJob, provider_name: str, user, docume
         )
 
     try:
-        document_text = _get_job_text(job)
-        normalized_data = provider.extract_ticket(document_text) if document_type == DocumentType.FLIGHT_TICKET else provider.extract_invoice(document_text)
+        document = _get_job_document(job)
+        normalized_data = provider.extract_ticket(document) if document_type == DocumentType.FLIGHT_TICKET else provider.extract_invoice(document)
         missing_fields = normalized_data.get("missing_critical_fields", [])
         suggested_matches = suggest_travel_case_matches(normalized_data) if document_type == DocumentType.FLIGHT_TICKET else []
         job.raw_extracted_data = {"provider": provider.name, "result": normalized_data}
@@ -259,21 +268,40 @@ def _run_extraction(job: DocumentExtractionJob, provider_name: str, user, docume
     return job
 
 
-def _get_job_text(job: DocumentExtractionJob) -> str:
+def _get_job_document(job: DocumentExtractionJob) -> ExtractionDocument:
     raw_data = job.raw_extracted_data or {}
     if raw_data.get(SOURCE_TEXT_KEY):
-        return raw_data[SOURCE_TEXT_KEY]
+        return ExtractionDocument(text=raw_data[SOURCE_TEXT_KEY])
     if not job.source_file:
         raise ValidationError("Document text is required when no source file is available.")
+
+    filename = job.source_file.name or ""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     try:
         job.source_file.open("rb")
         content = job.source_file.read()
     finally:
         job.source_file.close()
+
+    if extension in TEXT_EXTENSIONS:
+        try:
+            return ExtractionDocument(text=content.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValidationError("The uploaded text file could not be read as UTF-8.") from exc
+
+    mime_type = SUPPORTED_BINARY_MIME_TYPES.get(extension)
+    if mime_type:
+        return ExtractionDocument(
+            file_bytes=content,
+            mime_type=mime_type,
+            filename=filename.rsplit("/", 1)[-1],
+        )
+
+    # Unknown extension: fall back to treating it as UTF-8 text when possible.
     try:
-        return content.decode("utf-8")
+        return ExtractionDocument(text=content.decode("utf-8"))
     except UnicodeDecodeError as exc:
-        raise ValidationError("Only plain text source files are supported before OCR is implemented.") from exc
+        raise ValidationError("Unsupported document type. Upload a PDF, PNG, JPG, or plain text file.") from exc
 
 
 def _safe_error(exc: Exception) -> dict:

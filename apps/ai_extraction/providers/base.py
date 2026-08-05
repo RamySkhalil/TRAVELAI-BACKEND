@@ -1,9 +1,43 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from rest_framework.exceptions import ValidationError
+
+
+@dataclass
+class ExtractionDocument:
+    """A document to extract from: either plain text or a binary file.
+
+    Providers decide how to consume it. Vision-capable providers can read the
+    binary bytes (PDF/image) directly; text-only providers use ``text``.
+    """
+
+    text: str = ""
+    file_bytes: bytes | None = None
+    mime_type: str = ""
+    filename: str = ""
+
+    @property
+    def has_binary(self) -> bool:
+        return bool(self.file_bytes)
+
+    @property
+    def is_image(self) -> bool:
+        return self.mime_type.startswith("image/")
+
+    @property
+    def is_pdf(self) -> bool:
+        return self.mime_type == "application/pdf"
+
+
+def document_text(document: Any) -> str:
+    """Best-effort plain text for a document or raw string input."""
+    if isinstance(document, ExtractionDocument):
+        return document.text or ""
+    return str(document or "")
 
 
 TICKET_TEMPLATE: dict[str, Any] = {

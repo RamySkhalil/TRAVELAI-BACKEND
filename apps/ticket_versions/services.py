@@ -1,16 +1,20 @@
+import os
 from decimal import Decimal, InvalidOperation
 
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_time
+from django.utils.text import slugify
 from rest_framework.exceptions import ValidationError
 
 from apps.audit_logs.services import create_audit_log
 from apps.common.currency import normalize_currency
 from apps.common.services.locking import ensure_unlocked, lock_instance
 from apps.master_data.models import Supplier
+from apps.travel_cases.services import mark_case_ticket_booked
 
-from .models import TicketAction, TicketStatus, TicketVersion
+from .models import TicketAction, TicketBillingState, TicketStatus, TicketVersion
 
 
 TICKET_DOCUMENT_TYPES = {
@@ -20,6 +24,9 @@ TICKET_DOCUMENT_TYPES = {
     "CANCELLATION",
     "REFUND_NOTE",
 }
+
+# A wrongly uploaded document never represents money owed to a supplier.
+NON_BILLABLE_TICKET_ACTIONS = frozenset({TicketAction.WRONG_UPLOAD})
 
 
 def get_next_version_number(travel_case) -> str:
@@ -34,6 +41,10 @@ def create_ticket_version_from_confirmed_data(travel_case, data, user) -> Ticket
         data["travel_case"] = travel_case
         data["version_number"] = get_next_version_number(travel_case)
         ticket_version = TicketVersion.objects.create(**data)
+        mark_case_ticket_booked(travel_case, user)
+        # Tickets entered directly as non-draft skip the confirm step, so open
+        # their payable here too.
+        mark_ticket_awaiting_invoice(ticket_version, user)
     create_audit_log(
         user=user,
         action="Ticket Version Created",
@@ -61,6 +72,7 @@ def create_ticket_version_from_confirmed_extraction(extraction_job, travel_case,
     merged_data = {**normalized_data, **(overrides or {})}
     ticket_data = _ticket_data_from_extraction(merged_data, ticket_action, extraction_job)
     ticket_version = create_ticket_version_from_confirmed_data(travel_case, ticket_data, user)
+    _attach_source_document(ticket_version, extraction_job, user)
     create_audit_log(
         user=user,
         action="Ticket Version Created From Extraction",
@@ -72,13 +84,53 @@ def create_ticket_version_from_confirmed_extraction(extraction_job, travel_case,
     return ticket_version
 
 
+def _attach_source_document(ticket_version: TicketVersion, extraction_job, user=None) -> None:
+    """Copy the confirmed extraction's source file onto the ticket version.
+
+    The original stays on the extraction job for audit; the ticket version keeps
+    its own copy in the configured storage (Cloudflare R2/S3 when enabled, local
+    filesystem otherwise) so the document is available from ticket history.
+    Missing source files (text-only extractions) are skipped silently.
+    """
+    source_file = getattr(extraction_job, "source_file", None)
+    if not source_file:
+        return
+
+    try:
+        source_file.open("rb")
+        content = source_file.read()
+    finally:
+        source_file.close()
+
+    filename = _ticket_document_filename(ticket_version, source_file.name)
+    ticket_version.uploaded_ticket_file.save(filename, ContentFile(content), save=True)
+    create_audit_log(
+        user=user,
+        action="Ticket Document Attached",
+        entity_type="TicketVersion",
+        entity_id=ticket_version.id,
+        new_value={"uploaded_ticket_file": ticket_version.uploaded_ticket_file.name},
+        metadata={"extraction_job": extraction_job.id},
+    )
+
+
+def _ticket_document_filename(ticket_version: TicketVersion, source_name: str) -> str:
+    extension = os.path.splitext(source_name or "")[1].lower() or ".pdf"
+    case_number = slugify(ticket_version.travel_case.case_number) or "ticket"
+    version = slugify(ticket_version.version_number) or "v"
+    ticket_number = slugify(ticket_version.ticket_number) or "ticket"
+    return f"{case_number}-{version}-{ticket_number}{extension}"
+
+
 def _ticket_data_from_extraction(data: dict, ticket_action: str, extraction_job) -> dict:
+    supplier_value = data.get("supplier")
+    airline_fallback = supplier_value if isinstance(supplier_value, str) else ""
     return {
         "ticket_action": ticket_action,
         "passenger_name": _required_text(data, "passenger_name"),
         "ticket_number": _required_text(data, "ticket_number"),
         "pnr": _required_text(data, "pnr", fallback_keys=("booking_reference",)),
-        "airline": data.get("airline") or data.get("supplier") or "",
+        "airline": data.get("airline") or airline_fallback or "",
         "route_from": _required_text(data, "route_from"),
         "route_to": _required_text(data, "route_to"),
         "departure_date": _required_date(data, "departure_date"),
@@ -173,6 +225,89 @@ def _supplier_from_extraction(value) -> Supplier:
     return supplier
 
 
+def _set_billing_state(ticket_version: TicketVersion, state: str, user, *, audit_action: str, note=None, metadata=None) -> TicketVersion:
+    """Persist a billing state change and audit it. No-ops when nothing changes."""
+    note_changes = note is not None and note != ticket_version.billing_state_note
+    if ticket_version.billing_state == state and not note_changes:
+        return ticket_version
+    old_value = {
+        "billing_state": ticket_version.billing_state,
+        "billing_state_note": ticket_version.billing_state_note,
+    }
+    update_fields = ["billing_state", "billing_state_changed_at", "updated_at"]
+    ticket_version.billing_state = state
+    ticket_version.billing_state_changed_at = timezone.now()
+    if note is not None:
+        ticket_version.billing_state_note = note
+        update_fields.append("billing_state_note")
+    ticket_version.save(update_fields=update_fields)
+    create_audit_log(
+        user=user,
+        action=audit_action,
+        entity_type="TicketVersion",
+        entity_id=ticket_version.id,
+        old_value=old_value,
+        new_value={"billing_state": ticket_version.billing_state, "billing_state_note": ticket_version.billing_state_note},
+        metadata=metadata or {"travel_case": ticket_version.travel_case_id},
+    )
+    return ticket_version
+
+
+def mark_ticket_awaiting_invoice(ticket_version: TicketVersion, user=None) -> TicketVersion:
+    """Open the payable for a confirmed ticket so it is visible before invoicing.
+
+    Only a confirmed, billable ticket becomes a payable: a ``DRAFT`` ticket is not
+    a committed cost yet, and a wrongly uploaded document never is. Tickets that
+    were already invoiced, or that a human deliberately marked not billable, are
+    left alone so this can be called from any confirmation path.
+    """
+    if ticket_version.ticket_status == TicketStatus.DRAFT:
+        return ticket_version
+    if ticket_version.ticket_action in NON_BILLABLE_TICKET_ACTIONS:
+        return ticket_version
+    if ticket_version.billing_state != TicketBillingState.NOT_BILLABLE:
+        return ticket_version
+    if ticket_version.billing_state_note:
+        return ticket_version
+    return _set_billing_state(
+        ticket_version,
+        TicketBillingState.AWAITING_INVOICE,
+        user,
+        audit_action="Ticket Awaiting Supplier Invoice",
+    )
+
+
+def mark_ticket_invoiced(ticket_version: TicketVersion, user=None, metadata=None) -> TicketVersion:
+    """Close the payable once a supplier invoice line points at this ticket."""
+    return _set_billing_state(
+        ticket_version,
+        TicketBillingState.INVOICED,
+        user,
+        audit_action="Ticket Invoiced",
+        metadata=metadata,
+    )
+
+
+def mark_ticket_not_billable(ticket_version: TicketVersion, reason: str, user=None) -> TicketVersion:
+    """Take a ticket out of the awaiting-invoice queue when no invoice will arrive.
+
+    Needed for cancellations that carry no penalty and duplicate uploads, which
+    would otherwise age in the queue forever. A reason is mandatory and audited.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError("A reason is required to mark a ticket not billable.")
+    if ticket_version.billing_state == TicketBillingState.INVOICED:
+        raise ValidationError("An invoiced ticket cannot be marked not billable.")
+    return _set_billing_state(
+        ticket_version,
+        TicketBillingState.NOT_BILLABLE,
+        user,
+        audit_action="Ticket Marked Not Billable",
+        note=reason,
+    )
+
+
 def lock_ticket_version(ticket_version: TicketVersion, user=None) -> TicketVersion:
     locked = lock_instance(ticket_version)
     create_audit_log(
@@ -201,6 +336,7 @@ def confirm_ticket_version(ticket_version: TicketVersion, user) -> TicketVersion
         old_value=old_value,
         new_value={"ticket_status": ticket_version.ticket_status, "confirmed_by": user.id},
     )
+    mark_ticket_awaiting_invoice(ticket_version, user)
     return ticket_version
 
 
